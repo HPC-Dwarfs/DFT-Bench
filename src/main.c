@@ -17,6 +17,8 @@
 
 #include "constants.h"
 
+void run_DFT(void);
+
 int main(const int argc, char **argv) {
   const size_t bytesPerWord = sizeof(double);
 
@@ -44,6 +46,7 @@ int main(const int argc, char **argv) {
 #endif
 
   printf("Hi there, I'm running with %zu threads\n", numThreads);
+  run_DFT();
 
   return EXIT_SUCCESS;
 }

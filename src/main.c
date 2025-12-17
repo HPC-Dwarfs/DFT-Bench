@@ -19,7 +19,8 @@
 
 void run_DFT(void);
 
-int main(const int argc, char **argv) {
+int main(const int argc, char **argv)
+{
   const size_t bytesPerWord = sizeof(double);
 
 #ifdef _OPENMP
@@ -37,8 +38,7 @@ int main(const int argc, char **argv) {
     int i = omp_get_thread_num();
 #pragma omp critical
     {
-      printf("Thread %d running on processor %d\n", i,
-             affinity_getProcessorId());
+      printf("Thread %d running on processor %d\n", i, affinity_getProcessorId());
       affinity_getmask();
     }
   }

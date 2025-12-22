@@ -1,3 +1,4 @@
+#include "constants.h"
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,13 +11,12 @@ void adjustl(char *str);
 void read_poscar(
     char *filename, int *nat_o, double **rat_o, char (**sat_o)[5], double *cellvec)
 {
-  double bohr2ang = 0.529177210;
   int ntypat_tmp, natin, istat, nat_tmp, ityp;
   int *nitype;
   double *pos;
   double *rat;
   double scaling, cv[3][3];
-  char all_line[256], all_line_tmp[256];
+  char all_line[BUFFER_SIZE], all_line_tmp[BUFFER_SIZE];
   char hlines[8][BUFFER_SIZE] = { 0 };
   bool reduced, selective_dynamics;
   int count, offset, chars_scanned;
@@ -128,7 +128,7 @@ void read_poscar(
       sat[iat][i] = char_type[ityp][i];
   }
   for (int i = 0; i < 9; i++)
-    cellvec[i] = cellvec[i] * (scaling / bohr2ang);
+    cellvec[i] = cellvec[i] * (scaling / BOHR2ANG);
   for (int i = 0; i < 3; i++)
     for (int j = 0; j < 3; j++)
       cv[i][j] = cellvec[3 * i + j];
@@ -151,9 +151,9 @@ void read_poscar(
     }
   } else {
     for (int iat = 0; iat < natin; iat++) {
-      rat[3 * iat + 0] = pos[3 * iat + 0] / bohr2ang;
-      rat[3 * iat + 1] = pos[3 * iat + 1] / bohr2ang;
-      rat[3 * iat + 2] = pos[3 * iat + 2] / bohr2ang;
+      rat[3 * iat + 0] = pos[3 * iat + 0] / BOHR2ANG;
+      rat[3 * iat + 1] = pos[3 * iat + 1] / BOHR2ANG;
+      rat[3 * iat + 2] = pos[3 * iat + 2] / BOHR2ANG;
     }
   }
   //for(int iat=0;iat<natin;iat++) {

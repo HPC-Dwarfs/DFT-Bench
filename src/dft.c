@@ -12,24 +12,28 @@
 #endif
 
 #include "constants.h"
+#include "dft.h"
 #include "gto_on_grid.h"
-#include "io_vasp.h"
-#include "run_DFT.h"
+#include "poscarReader.h"
 
-void run_DFT(void)
+void runDft(void)
 {
   char filename[] = "poscars/POSCAR-0008-mp-149";
-  int nat, ngx, ngy, ngz;
-  double *rat = NULL;
-  char (*sat)[5];
-  double cellvec[3][3];
+  int ngx, ngy, ngz;
   double xyz111[3];
   double hgrid[3][3];
   double *orb;
   double gw, rgcut;
   char bc[] = "bulk";
+  int nat;
+  double *rat        = NULL;
+  char (*sat)[5]     = NULL;
+  double cellvec[9]  = { 0 };
+  PoscarFileType pf  = { .nat_o = &nat, .rat_o = &rat, .sat_o = &sat, .cellvec = cellvec };
 
-  read_poscar(filename, &nat, &rat, &sat, &cellvec[0][0]);
+  readPoscarFile(filename, &pf);
+
+  double (*cv)[3] = (double (*)[3]) pf.cellvec;
 
   gw    = 1.11 / BOHR2ANG;
   rgcut = 6.0 * gw;
@@ -44,9 +48,9 @@ void run_DFT(void)
     }
   }
 
-  hgrid[0][0] = cellvec[0][0] / ngx;
-  hgrid[1][1] = cellvec[1][1] / ngx;
-  hgrid[2][2] = cellvec[2][2] / ngx;
+  hgrid[0][0] = cv[0][0] / ngx;
+  hgrid[1][1] = cv[1][1] / ngy;
+  hgrid[2][2] = cv[2][2] / ngz;
 
   xyz111[0]   = 0.0;
   xyz111[1]   = 0.0;
@@ -56,8 +60,7 @@ void run_DFT(void)
 
   put_gto_sym_ortho(bc, &rat[3 * 3], gw, rgcut, xyz111, ngx, ngy, ngz, &hgrid[0][0], orb);
 
-  test_put_gto_sym_ortho(
-      &rat[3 * 3], gw, rgcut, xyz111, ngx, ngy, ngz, &hgrid[0][0], orb);
+  test_put_gto_sym_ortho(&rat[3 * 3], gw, xyz111, ngx, ngy, ngz, &hgrid[0][0], orb);
 
   free(rat);
   free(sat);
@@ -66,7 +69,6 @@ void run_DFT(void)
 
 void test_put_gto_sym_ortho(double *rxyz,
     double gw,
-    double rgcut,
     double *xyz111,
     int ngx,
     int ngy,
@@ -75,17 +77,18 @@ void test_put_gto_sym_ortho(double *rxyz,
     double *orb_i)
 {
   int ll;
-  double *wa_t, *wa, *orb;
+  double *waT, *wa, *orb;
   double gwsqinv, fac, res;
-  double hx, hy, hz, dx, dy, dz;
+  double hx, hy, hz;
+  double *expx, *expy, *expz;
   int negx, negy, negz;
-  negx = 5 * ngx;
-  negy = 5 * ngy;
-  negz = 5 * ngz;
-  orb  = malloc(ngx * ngy * ngz * sizeof(double));
-  wa_t = calloc(negx * negy * negz, sizeof(double));
+  negx    = 5 * ngx;
+  negy    = 5 * ngy;
+  negz    = 5 * ngz;
+  orb     = malloc(ngx * ngy * ngz * sizeof(double));
+  waT     = calloc(negx * negy * negz, sizeof(double));
 
-  wa      = (wa_t + negx * negy * ngz * 2 + negx * ngy * 2 + ngx * 2);
+  wa      = (waT + negx * negy * ngz * 2 + negx * ngy * 2 + ngx * 2);
   hx      = hgrid[0];
   hy      = hgrid[4];
   hz      = hgrid[8];
@@ -94,16 +97,32 @@ void test_put_gto_sym_ortho(double *rxyz,
   printf("fac= %lf\n", fac);
   printf("rxyz  %20.10lf  %20.10lf  %20.10lf\n", rxyz[0], rxyz[1], rxyz[2]);
 
-#pragma omp parallel for private(dz, dy, dx) schedule(static)
+  // Precompute 1D exponentials (separable Gaussian)
+  expx = malloc(negx * sizeof(double));
+  expy = malloc(negy * sizeof(double));
+  expz = malloc(negz * sizeof(double));
+  for (int ix = -2 * ngx; ix < 3 * ngx; ix++) {
+    double dx          = rxyz[0] - ix * hx - xyz111[0];
+    expx[ix + 2 * ngx] = exp(-dx * dx * gwsqinv);
+  }
+  for (int iy = -2 * ngy; iy < 3 * ngy; iy++) {
+    double dy          = rxyz[1] - iy * hy - xyz111[1];
+    expy[iy + 2 * ngy] = exp(-dy * dy * gwsqinv);
+  }
   for (int iz = -2 * ngz; iz < 3 * ngz; iz++) {
-    dz       = rxyz[2] - iz * hz - xyz111[2];
-    int kk_z = negx * negy * iz;
+    double dz          = rxyz[2] - iz * hz - xyz111[2];
+    expz[iz + 2 * ngz] = exp(-dz * dz * gwsqinv);
+  }
+
+#pragma omp parallel for schedule(static)
+  for (int iz = -2 * ngz; iz < 3 * ngz; iz++) {
+    double ez = fac * expz[iz + 2 * ngz];
+    int kkZ   = negx * negy * iz;
     for (int iy = -2 * ngy; iy < 3 * ngy; iy++) {
-      dy        = rxyz[1] - iy * hy - xyz111[1];
-      int kk_yz = kk_z + negx * iy;
+      double eyz = ez * expy[iy + 2 * ngy];
+      int kkYz   = kkZ + negx * iy;
       for (int ix = -2 * ngx; ix < 3 * ngx; ix++) {
-        dx              = rxyz[0] - ix * hx - xyz111[0];
-        wa[kk_yz + ix]  = fac * exp(-(dx * dx + dy * dy + dz * dz) * gwsqinv);
+        wa[kkYz + ix] = eyz * expx[ix + 2 * ngx];
       }
     }
   }
@@ -114,14 +133,14 @@ void test_put_gto_sym_ortho(double *rxyz,
     for (int icy = 0; icy < 5; icy++) {
       for (int icx = 0; icx < 5; icx++) {
         for (int iz = 0; iz < ngz; iz++) {
-          int kk_z = ngx * ngy * iz;
-          int ll_z = negx * negy * (icz * ngz + iz);
+          int kkZ = ngx * ngy * iz;
+          int llZ = negx * negy * (icz * ngz + iz);
           for (int iy = 0; iy < ngy; iy++) {
-            int kk_yz = kk_z + ngx * iy;
-            ll = ll_z + negx * (icy * ngy + iy) + icx * ngx;
+            int kkYz = kkZ + ngx * iy;
+            ll       = llZ + negx * (icy * ngy + iy) + icx * ngx;
 
             for (int ix = 0; ix < ngx; ix++) {
-              orb[kk_yz + ix] += wa_t[ll + ix];
+              orb[kkYz + ix] += waT[ll + ix];
             }
           }
         }
@@ -137,6 +156,9 @@ void test_put_gto_sym_ortho(double *rxyz,
   }
 
   printf("res= %14.5E\n", sqrt(res));
-  free(wa_t);
+  free(expx);
+  free(expy);
+  free(expz);
+  free(waT);
   free(orb);
 }

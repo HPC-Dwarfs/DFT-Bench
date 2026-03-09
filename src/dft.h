@@ -7,7 +7,6 @@
 
 void test_put_gto_sym_ortho(double *rxyz,
     double gw,
-    double rgcut,
     double *xyz111,
     int ngx,
     int ngy,
@@ -15,6 +14,6 @@ void test_put_gto_sym_ortho(double *rxyz,
     double *hgrid,
     double *orb);
 
-void run_DFT(void);
+void runDft(void);
 
 #endif // __RUN_DFT_H_

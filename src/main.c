@@ -16,8 +16,7 @@
 #endif
 
 #include "constants.h"
-
-void run_DFT(void);
+#include "dft.h"
 
 int main(const int argc, char **argv)
 {
@@ -45,7 +44,7 @@ int main(const int argc, char **argv)
 #endif
 #endif
 
-  run_DFT();
+  runDft();
 
   return EXIT_SUCCESS;
 }

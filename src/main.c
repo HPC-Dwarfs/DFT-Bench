@@ -45,7 +45,6 @@ int main(const int argc, char **argv)
 #endif
 #endif
 
-  printf("Hi there, I'm running with %zu threads\n", numThreads);
   run_DFT();
 
   return EXIT_SUCCESS;

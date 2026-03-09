@@ -33,13 +33,13 @@ void put_gto_sym_ortho(char *bc,
   //grid points that are outside of box.
   //work arrays to save the values of one dimensional gaussian function.
   double *ww;
-  double rhoz, rhoyz, pi, qat;
+  double rhoz, rhoyz, qat;
   double hgxinv, hgyinv, hgzinv;
   double width_inv, width_inv_xyz[3];
   double width_inv_hhh[3];
   double xat, yat, zat, facqiat, fac;
   double hx, hy, hz, tt1;
-  int iatox, iatoy, iatoz, jx, jy, jz;
+  int iatox, iatoy, iatoz;
   int ii, nwa;
   int nbgx, nbgy, nbgz, nagx, nagy, nagz;
   int nbgmax;
@@ -87,15 +87,12 @@ void put_gto_sym_ortho(char *bc,
   nnx    = ngx + 2 * nagx;
   nny    = ngy + 2 * nagy;
   nwa    = nnx * nny * (ngz + 2 * nagz);
-  wa     = malloc(nwa * sizeof(double));
+  wa     = calloc(nwa, sizeof(double));
   nbgmax = max_int(max_int(nbgx, nbgy), nbgz);
   ww     = malloc((2 * nbgmax + 1) * 3 * sizeof(double));
-  pi     = 4.0 * atan(1.0);
   hgxinv = 1.0 / hx;
   hgyinv = 1.0 / hy;
   hgzinv = 1.0 / hz;
-  for (int i = 0; i < nwa; i++)
-    wa[i] = 0.0;
   //shift the gaussian centers
   iatox = (int)lround((rxyz[0] - xyz111[0]) * hgxinv) + 0;
   iatoy = (int)lround((rxyz[1] - xyz111[1]) * hgyinv) + 0;
@@ -117,7 +114,7 @@ void put_gto_sym_ortho(char *bc,
   }
   //construct the one-dimensional gaussians
   width_inv        = 1.0 / gw;
-  fac              = 1.0 / pow(gw * sqrt(pi), 3);
+  fac              = 1.0 / pow(gw * sqrt(M_PI), 3);
   width_inv_hhh[0] = width_inv * hx;
   width_inv_hhh[1] = width_inv * hy;
   width_inv_hhh[2] = width_inv * hz;
@@ -133,16 +130,11 @@ void put_gto_sym_ortho(char *bc,
   facqiat = fac * qat;
   for (int iz = -nbgz; iz <= nbgz; iz++) {
     rhoz = facqiat * ww[(2 * nbgmax + 1) * 2 + iz + nbgmax];
-    jz   = iatoz + iz;
     for (int iy = -nbgy; iy <= nbgy; iy++) {
       rhoyz = rhoz * ww[(2 * nbgmax + 1) + iy + nbgmax];
-      jy    = iatoy + iy;
-      //for(int ix=mboundg(1,iy,iz),mboundg(2,iy,iz)
+      ii    = nnx * nny * (iz + nbgz) + nnx * (iy + nbgy);
       for (int ix = -nbgx; ix <= nbgx; ix++) {
-        jx = iatox + ix;
-        //write(*,'(5i5)') iat,iatox,ix,iatoy,iy
-        ii                 = nnx * nny * (iz + nbgz) + nnx * (iy + nbgy);
-        wa[ii + ix + nbgx] = wa[ii + ix + nbgx] + rhoyz * ww[ix + nbgmax];
+        wa[ii + ix + nbgx] += rhoyz * ww[ix + nbgmax];
       }
     }
   }
@@ -160,8 +152,7 @@ void put_gto_sym_ortho(char *bc,
   //    }
   //  }
   //}
-  for (int i = 0; i < ngx * ngy * ngz; i++)
-    rho[i] = 0.0;
+  memset(rho, 0, ngx * ngy * ngz * sizeof(double));
   charge_back_to_cell(ngx, ngy, ngz, nagx, nagy, nagz, ibcx, wa, rho);
   //  !do iz=1,ngz
   //  !    do iy=1,ngy
@@ -189,7 +180,6 @@ void charge_back_to_cell(int ngx,
   //work arrays to save the values of one dimensional gaussian function.
   int jgx;
   int iix, iiy, iiz;
-  int kk, ll;
   int ifinalx, igxs, igxf;
   int istartx, istarty, istartz;
   int nnx, nny;
@@ -209,31 +199,29 @@ void charge_back_to_cell(int ngx,
     iiz = iiz + 1;
     if (iiz == ngz + 1)
       iiz = 1;
+    int kk_z  = ngx * ngy * (iiz - 1);
+    int ll_z  = nnx * nny * igz;
     for (int igy = 1 - nagy; igy <= ngy + nagy; igy++) {
       iiy = iiy + 1;
       if (iiy == ngy + 1)
         iiy = 1;
+      int kk_yz = kk_z + ngx * (iiy - 1);
+      int ll_yz = ll_z + nnx * igy;
       iix = istartx - 1;
       for (int igx = 1 - nagx; igx <= igxs - 1; igx++) {
         iix     = iix + 1;
-        kk      = ngx * ngy * (iiz - 1) + ngx * (iiy - 1) + iix - 1;
-        ll      = nnx * nny * igz + nnx * igy + igx;
-        rho[kk] = rho[kk] + wa[ll];
+        rho[kk_yz + iix - 1] += wa[ll_yz + igx];
       }
       for (int igx = igxs; igx <= igxf - 1; igx += ngx) {
         for (int iix = 1; iix <= ngx; iix++) {
-          jgx     = igx + iix - 1;
-          kk      = ngx * ngy * (iiz - 1) + ngx * (iiy - 1) + iix - 1;
-          ll      = nnx * nny * igz + nnx * igy + jgx;
-          rho[kk] = rho[kk] + wa[ll];
+          jgx = igx + iix - 1;
+          rho[kk_yz + iix - 1] += wa[ll_yz + jgx];
         }
       }
       iix = 0;
       for (int igx = igxf; igx <= ngx + nagx; igx++) {
         iix     = iix + 1;
-        kk      = ngx * ngy * (iiz - 1) + ngx * (iiy - 1) + iix - 1;
-        ll      = nnx * nny * igz + nnx * igy + igx;
-        rho[kk] = rho[kk] + wa[ll];
+        rho[kk_yz + iix - 1] += wa[ll_yz + igx];
       }
     }
   }

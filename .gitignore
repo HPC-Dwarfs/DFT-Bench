@@ -54,3 +54,6 @@ dkms.conf
 # debug information files
 *.dwo
 config.mk
+/.cache/clangd/index
+/compile_commands.json
+/dftbench-CLANG

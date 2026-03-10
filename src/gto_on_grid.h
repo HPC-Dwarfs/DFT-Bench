@@ -5,8 +5,7 @@
 #ifndef __GTO_ON_GRID_H_
 #define __GTO_ON_GRID_H_
 
-void put_gto_sym_ortho(char *bc,
-    double *rxyz,
+void put_gto_sym_ortho(double *rxyz,
     double gw,
     double rgcut,
     double *xyz111,

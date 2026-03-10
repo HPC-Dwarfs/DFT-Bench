@@ -16,7 +16,7 @@
 #include "gto_on_grid.h"
 #include "poscarReader.h"
 
-static void testPutGtoSymOrtho(double *rxyz,
+void test_put_gto_sym_ortho(double *rxyz,
     double gw,
     double *xyz111,
     int ngx,
@@ -118,7 +118,6 @@ void runDft(PoscarFileType *pf)
   double hgrid[3][3];
   double *orb;
   double gw, rgcut;
-  char bc[]       = "bulk";
   double *rat     = *pf->rat_o;
   char (*sat)[5]  = *pf->sat_o;
   double (*cv)[3] = (double (*)[3])pf->cellvec;
@@ -145,7 +144,7 @@ void runDft(PoscarFileType *pf)
 
   orb         = malloc(ngx * ngy * ngz * sizeof(double));
 
-  put_gto_sym_ortho(bc, &rat[3 * 3], gw, rgcut, xyz111, ngx, ngy, ngz, &hgrid[0][0], orb);
+  put_gto_sym_ortho(&rat[3 * 3], gw, rgcut, xyz111, ngx, ngy, ngz, &hgrid[0][0], orb);
 
   test_put_gto_sym_ortho(&rat[3 * 3], gw, xyz111, ngx, ngy, ngz, &hgrid[0][0], orb);
 

@@ -17,6 +17,7 @@
 
 #include "constants.h"
 #include "dft.h"
+#include "poscarReader.h"
 
 int main(const int argc, char **argv)
 {
@@ -44,7 +45,18 @@ int main(const int argc, char **argv)
 #endif
 #endif
 
-  runDft();
+  int nat;
+  double *rat       = NULL;
+  char (*sat)[5]    = NULL;
+  double cellvec[9] = { 0 };
+  PoscarFileType pf = { .nat_o = &nat, .rat_o = &rat, .sat_o = &sat, .cellvec = cellvec };
+
+  readPoscarFile("poscars/POSCAR-0008-mp-149", &pf);
+
+  runDft(&pf);
+
+  free(rat);
+  free(sat);
 
   return EXIT_SUCCESS;
 }

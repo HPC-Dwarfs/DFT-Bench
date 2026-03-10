@@ -5,6 +5,8 @@
 #ifndef __RUN_DFT_H_
 #define __RUN_DFT_H_
 
+#include "poscarReader.h"
+
 void test_put_gto_sym_ortho(double *rxyz,
     double gw,
     double *xyz111,
@@ -14,6 +16,6 @@ void test_put_gto_sym_ortho(double *rxyz,
     double *hgrid,
     double *orb);
 
-void runDft(void);
+void runDft(PoscarFileType *pf);
 
 #endif // __RUN_DFT_H_

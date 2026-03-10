@@ -16,58 +16,7 @@
 #include "gto_on_grid.h"
 #include "poscarReader.h"
 
-void runDft(void)
-{
-  char filename[] = "poscars/POSCAR-0008-mp-149";
-  int ngx, ngy, ngz;
-  double xyz111[3];
-  double hgrid[3][3];
-  double *orb;
-  double gw, rgcut;
-  char bc[] = "bulk";
-  int nat;
-  double *rat        = NULL;
-  char (*sat)[5]     = NULL;
-  double cellvec[9]  = { 0 };
-  PoscarFileType pf  = { .nat_o = &nat, .rat_o = &rat, .sat_o = &sat, .cellvec = cellvec };
-
-  readPoscarFile(filename, &pf);
-
-  double (*cv)[3] = (double (*)[3]) pf.cellvec;
-
-  gw    = 1.11 / BOHR2ANG;
-  rgcut = 6.0 * gw;
-
-  ngx   = 128;
-  ngy   = 128;
-  ngz   = 128;
-
-  for (int i = 0; i < 3; i++) {
-    for (int j = 0; j < 3; j++) {
-      hgrid[i][j] = 0.0;
-    }
-  }
-
-  hgrid[0][0] = cv[0][0] / ngx;
-  hgrid[1][1] = cv[1][1] / ngy;
-  hgrid[2][2] = cv[2][2] / ngz;
-
-  xyz111[0]   = 0.0;
-  xyz111[1]   = 0.0;
-  xyz111[2]   = 0.0;
-
-  orb         = malloc(ngx * ngy * ngz * sizeof(double));
-
-  put_gto_sym_ortho(bc, &rat[3 * 3], gw, rgcut, xyz111, ngx, ngy, ngz, &hgrid[0][0], orb);
-
-  test_put_gto_sym_ortho(&rat[3 * 3], gw, xyz111, ngx, ngy, ngz, &hgrid[0][0], orb);
-
-  free(rat);
-  free(sat);
-  free(orb);
-}
-
-void test_put_gto_sym_ortho(double *rxyz,
+static void testPutGtoSymOrtho(double *rxyz,
     double gw,
     double *xyz111,
     int ngx,
@@ -160,5 +109,45 @@ void test_put_gto_sym_ortho(double *rxyz,
   free(expy);
   free(expz);
   free(waT);
+  free(orb);
+}
+void runDft(PoscarFileType *pf)
+{
+  int ngx, ngy, ngz;
+  double xyz111[3];
+  double hgrid[3][3];
+  double *orb;
+  double gw, rgcut;
+  char bc[]       = "bulk";
+  double *rat     = *pf->rat_o;
+  char (*sat)[5]  = *pf->sat_o;
+  double (*cv)[3] = (double (*)[3])pf->cellvec;
+
+  gw              = 1.11 / BOHR2ANG;
+  rgcut           = 6.0 * gw;
+  ngx             = 128;
+  ngy             = 128;
+  ngz             = 128;
+
+  for (int i = 0; i < 3; i++) {
+    for (int j = 0; j < 3; j++) {
+      hgrid[i][j] = 0.0;
+    }
+  }
+
+  hgrid[0][0] = cv[0][0] / ngx;
+  hgrid[1][1] = cv[1][1] / ngy;
+  hgrid[2][2] = cv[2][2] / ngz;
+
+  xyz111[0]   = 0.0;
+  xyz111[1]   = 0.0;
+  xyz111[2]   = 0.0;
+
+  orb         = malloc(ngx * ngy * ngz * sizeof(double));
+
+  put_gto_sym_ortho(bc, &rat[3 * 3], gw, rgcut, xyz111, ngx, ngy, ngz, &hgrid[0][0], orb);
+
+  test_put_gto_sym_ortho(&rat[3 * 3], gw, xyz111, ngx, ngy, ngz, &hgrid[0][0], orb);
+
   free(orb);
 }

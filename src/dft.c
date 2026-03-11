@@ -13,7 +13,7 @@
 
 #include "constants.h"
 #include "dft.h"
-#include "gto_on_grid.h"
+#include "gtoOnGrid.h"
 #include "poscarReader.h"
 
 void test_put_gto_sym_ortho(double *rxyz,
@@ -144,7 +144,7 @@ void runDft(PoscarFileType *pf)
 
   orb         = malloc(ngx * ngy * ngz * sizeof(double));
 
-  put_gto_sym_ortho(&rat[3 * 3], gw, rgcut, xyz111, ngx, ngy, ngz, &hgrid[0][0], orb);
+  putGtoSymOrtho(&rat[3 * 3], gw, rgcut, xyz111, ngx, ngy, ngz, &hgrid[0][0], orb);
 
   test_put_gto_sym_ortho(&rat[3 * 3], gw, xyz111, ngx, ngy, ngz, &hgrid[0][0], orb);
 

@@ -15,5 +15,5 @@ VERSION  = --version
 CFLAGS   = $(FAST_WORKAROUND) -xHost -std=c99 -Wno-unused-command-line-argument -ffreestanding $(OPENMP)
 LFLAGS   = $(OPENMP)
 DEFINES  = -D_GNU_SOURCE
-INCLUDES =
-LIBS     =
+INCLUDES = -I$(MKLROOT)/include/fftw
+LIBS     = -qmkl

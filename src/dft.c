@@ -2,11 +2,11 @@
  * All rights reserved. This file is part of DFT-Bench.
  * Use of this source code is governed by a MIT style
  * license that can be found in the LICENSE file. */
+#include <fftw3.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <fftw3.h>
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -44,7 +44,7 @@ void test_put_gto_sym_ortho(double *rxyz,
   hz      = hgrid[8];
   gwsqinv = 1.0 / (gw * gw);
   fac     = 1.0 / pow(gw * sqrt(M_PI), 3);
-  fac     *= sqrt(pow(gw*sqrt(2.0*M_PI),3));
+  fac *= sqrt(pow(gw * sqrt(2.0 * M_PI), 3));
   printf("fac= %lf\n", fac);
   printf("rxyz  %20.10lf  %20.10lf  %20.10lf\n", rxyz[0], rxyz[1], rxyz[2]);
 
@@ -128,11 +128,11 @@ void runDft(PoscarFileType *pf)
   electronState es;
   fftw_plan planf, planb;
 
-  gw              = 1.11 / BOHR2ANG * 0.5;
-  rgcut           = 6.0 * gw;
-  ngx             = 32;
-  ngy             = 32;
-  ngz             = 32;
+  gw    = 1.11 / BOHR2ANG * 0.5;
+  rgcut = 6.0 * gw;
+  ngx   = 32;
+  ngy   = 32;
+  ngz   = 32;
 
   for (int i = 0; i < 3; i++) {
     for (int j = 0; j < 3; j++) {
@@ -143,65 +143,73 @@ void runDft(PoscarFileType *pf)
   hgrid[0][0] = cv[0][0] / ngx;
   hgrid[1][1] = cv[1][1] / ngy;
   hgrid[2][2] = cv[2][2] / ngz;
-  printf("hgrid= %10.5f %10.5f %10.5f\n",hgrid[0][0],hgrid[1][1],hgrid[2][2]);
+  printf("hgrid= %10.5f %10.5f %10.5f\n", hgrid[0][0], hgrid[1][1], hgrid[2][2]);
 
-  xyz111[0]   = 0.0;
-  xyz111[1]   = 0.0;
-  xyz111[2]   = 0.0;
+  xyz111[0] = 0.0;
+  xyz111[1] = 0.0;
+  xyz111[2] = 0.0;
 
-  es.norb=2*(*pf->nat_o);
-  es.orbs=(double **) malloc(es.norb * sizeof(double *));
-  for(int iorb=0;iorb<es.norb;iorb++) {
-    es.orbs[iorb]=malloc(ngx * ngy * ngz * sizeof(double));
+  es.norb   = 2 * (*pf->nat_o);
+  es.orbs   = (double **)malloc(es.norb * sizeof(double *));
+  for (int iorb = 0; iorb < es.norb; iorb++) {
+    es.orbs[iorb] = malloc(ngx * ngy * ngz * sizeof(double));
   }
 
   //orb         = malloc(ngx * ngy * ngz * sizeof(double));
-  orb=es.orbs[0];
-  orbk        = malloc((ngx+2) * ngy * ngz * sizeof(double));
-  kinorb      = malloc(ngx * ngy * ngz * sizeof(double));
+  orb    = es.orbs[0];
+  orbk   = malloc((ngx + 2) * ngy * ngz * sizeof(double));
+  kinorb = malloc(ngx * ngy * ngz * sizeof(double));
 
   putGtoSymOrtho(&rat[3 * 3], gw, rgcut, xyz111, ngx, ngy, ngz, &hgrid[0][0], orb);
-  for(int i=0;i<ngx*ngy*ngz;i++) orb[i]=orb[i]*sqrt(pow(gw*sqrt(2.0*M_PI),3));
-  anorm=0.0;
-  for(int i=0;i<ngx*ngy*ngz;i++) anorm+=orb[i]*orb[i];
-  anorm=sqrt(anorm*hgrid[0][0]*hgrid[1][1]*hgrid[2][2]);
-  printf("anorm= %20.10f\n",anorm);
+  for (int i = 0; i < ngx * ngy * ngz; i++)
+    orb[i] = orb[i] * sqrt(pow(gw * sqrt(2.0 * M_PI), 3));
+  anorm = 0.0;
+  for (int i = 0; i < ngx * ngy * ngz; i++)
+    anorm += orb[i] * orb[i];
+  anorm = sqrt(anorm * hgrid[0][0] * hgrid[1][1] * hgrid[2][2]);
+  printf("anorm= %20.10f\n", anorm);
 
-  planf=fftw_plan_dft_r2c_3d(ngx, ngy, ngz, orb, (fftw_complex *)orbk, FFTW_ESTIMATE);
-  planb=fftw_plan_dft_c2r_3d (ngx, ngy, ngz, (fftw_complex *)orbk, kinorb, FFTW_ESTIMATE);
+  planf = fftw_plan_dft_r2c_3d(ngx, ngy, ngz, orb, (fftw_complex *)orbk, FFTW_ESTIMATE);
+  planb =
+      fftw_plan_dft_c2r_3d(ngx, ngy, ngz, (fftw_complex *)orbk, kinorb, FFTW_ESTIMATE);
 
   fftw_execute(planf);
-  for(int igz=0;igz<ngz;igz++) {
-    for(int igy=0;igy<ngy;igy++) {
-      for(int igx=0;igx<ngx;igx++) {
-        igxt=igx;
-        igyt=igy;
-        igzt=igz;
-        if(igy>ngy/2-1) igyt=ngy-igy;
-        if(igz>ngz/2-1) igzt=ngz-igz;
-        akx=2.0*M_PI*(igxt/2) / ((double) ngx * hgrid[0][0]);
-        aky=2.0*M_PI*(igyt  ) / ((double) ngy * hgrid[1][1]);
-        akz=2.0*M_PI*(igzt  ) / ((double) ngz * hgrid[2][2]);
-        aknorm2=akx*akx+aky*aky+akz*akz;
-        orbk[igz*(ngx+2)*ngy+igy*(ngx+2)+igx]*=0.5*aknorm2;
+  for (int igz = 0; igz < ngz; igz++) {
+    for (int igy = 0; igy < ngy; igy++) {
+      for (int igx = 0; igx < ngx; igx++) {
+        igxt = igx;
+        igyt = igy;
+        igzt = igz;
+        if (igy > ngy / 2 - 1)
+          igyt = ngy - igy;
+        if (igz > ngz / 2 - 1)
+          igzt = ngz - igz;
+        akx     = 2.0 * M_PI * (igxt / 2) / ((double)ngx * hgrid[0][0]);
+        aky     = 2.0 * M_PI * (igyt) / ((double)ngy * hgrid[1][1]);
+        akz     = 2.0 * M_PI * (igzt) / ((double)ngz * hgrid[2][2]);
+        aknorm2 = akx * akx + aky * aky + akz * akz;
+        orbk[igz * (ngx + 2) * ngy + igy * (ngx + 2) + igx] *= 0.5 * aknorm2;
       }
     }
   }
-  ekinAnalytical=3.0/(4.0*pow(gw,5)*M_PI*sqrt(2.0*M_PI))*(pow(gw*sqrt(2.0*M_PI),3));
+  ekinAnalytical = 3.0 / (4.0 * pow(gw, 5) * M_PI * sqrt(2.0 * M_PI)) *
+                   (pow(gw * sqrt(2.0 * M_PI), 3));
   fftw_execute(planb);
-  ekin=0.0;
-  for(int i=0;i<ngx*ngy*ngz;i++) kinorb[i]*=1.0/(double)(ngx*ngy*ngz);
-  for(int i=0;i<ngx*ngy*ngz;i++) ekin+=orb[i]*kinorb[i];
-  ekin*=(hgrid[0][0]*hgrid[1][1]*hgrid[2][2]);
-  printf("nat= %d\n",*pf->nat_o);
-  printf("ekin= %20.10f  %20.10f  %14.5E\n",ekin,ekinAnalytical,ekin-ekinAnalytical);
+  ekin = 0.0;
+  for (int i = 0; i < ngx * ngy * ngz; i++)
+    kinorb[i] *= 1.0 / (double)(ngx * ngy * ngz);
+  for (int i = 0; i < ngx * ngy * ngz; i++)
+    ekin += orb[i] * kinorb[i];
+  ekin *= (hgrid[0][0] * hgrid[1][1] * hgrid[2][2]);
+  printf("nat= %d\n", *pf->nat_o);
+  printf("ekin= %20.10f  %20.10f  %14.5E\n", ekin, ekinAnalytical, ekin - ekinAnalytical);
 
   test_put_gto_sym_ortho(&rat[3 * 3], gw, xyz111, ngx, ngy, ngz, &hgrid[0][0], orb);
 
   fftw_destroy_plan(planf);
   fftw_destroy_plan(planb);
 
-  for(int iorb=0;iorb<es.norb;iorb++) {
+  for (int iorb = 0; iorb < es.norb; iorb++) {
     free(es.orbs[iorb]);
   }
   free(es.orbs);

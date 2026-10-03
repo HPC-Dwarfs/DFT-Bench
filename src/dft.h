@@ -18,4 +18,12 @@ void test_put_gto_sym_ortho(double *rxyz,
 
 void runDft(PoscarFileType *pf);
 
+typedef struct {
+  int norb;
+  int ngx;
+  int ngy;
+  int ngz;
+  double **orbs;
+} electronState;
+
 #endif // __RUN_DFT_H_

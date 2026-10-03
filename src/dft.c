@@ -125,6 +125,7 @@ void runDft(PoscarFileType *pf)
   double *rat     = *pf->rat_o;
   char (*sat)[5]  = *pf->sat_o;
   double (*cv)[3] = (double (*)[3])pf->cellvec;
+  electronState es;
   fftw_plan planf, planb;
 
   gw              = 1.11 / BOHR2ANG * 0.5;
@@ -148,7 +149,14 @@ void runDft(PoscarFileType *pf)
   xyz111[1]   = 0.0;
   xyz111[2]   = 0.0;
 
-  orb         = malloc(ngx * ngy * ngz * sizeof(double));
+  es.norb=2*(*pf->nat_o);
+  es.orbs=(double **) malloc(es.norb * sizeof(double *));
+  for(int iorb=0;iorb<es.norb;iorb++) {
+    es.orbs[iorb]=malloc(ngx * ngy * ngz * sizeof(double));
+  }
+
+  //orb         = malloc(ngx * ngy * ngz * sizeof(double));
+  orb=es.orbs[0];
   orbk        = malloc((ngx+2) * ngy * ngz * sizeof(double));
   kinorb      = malloc(ngx * ngy * ngz * sizeof(double));
 
@@ -193,7 +201,11 @@ void runDft(PoscarFileType *pf)
   fftw_destroy_plan(planf);
   fftw_destroy_plan(planb);
 
-  free(orb);
+  for(int iorb=0;iorb<es.norb;iorb++) {
+    free(es.orbs[iorb]);
+  }
+  free(es.orbs);
+  //free(orb);
   free(orbk);
   free(kinorb);
 }

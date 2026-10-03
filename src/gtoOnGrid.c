@@ -131,11 +131,14 @@ void putGtoSymOrtho(double *rxyz,
 #pragma omp parallel for schedule(static)
   for (int iz = -nbgz; iz <= nbgz; iz++) {
     double rhoz = fac * wwz[iz + nbgz];
+    int jz = iatoz + iz;
     for (int iy = -nbgy; iy <= nbgy; iy++) {
       double rhoyz = rhoz * wwy[iy + nbgy];
-      int ii       = nnx * nny * (iz + nbgz) + nnx * (iy + nbgy);
+      int jy = iatoy + iy;
+      int ii       = nnx * nny * (jz + nbgz) + nnx * (jy + nbgy);
       for (int ix = -nbgx; ix <= nbgx; ix++) {
-        wa[ii + ix + nbgx] += rhoyz * wwx[ix + nbgx];
+        int jx = iatox + ix;
+        wa[ii + jx + nbgx] += rhoyz * wwx[ix + nbgx];
       }
     }
   }

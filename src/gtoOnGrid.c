@@ -149,3 +149,17 @@ void putGtoSymOrtho(double *rxyz,
   free(wwz);
   free(wa);
 }
+void putGtoSymOrthoOrb(double *rxyz,
+    double gw,
+    double rgcut,
+    double *xyz111,
+    int ngx,
+    int ngy,
+    int ngz,
+    double *hgrid,
+    double *orb)
+{
+  putGtoSymOrtho(rxyz, gw, rgcut, xyz111, ngx, ngy, ngz, hgrid, orb);
+  for (int i = 0; i < ngx * ngy * ngz; i++)
+    orb[i] = orb[i] * sqrt(pow(gw * sqrt(2.0 * M_PI), 3));
+}

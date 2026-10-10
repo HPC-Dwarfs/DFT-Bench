@@ -17,7 +17,7 @@
 #include "gtoOnGrid.h"
 #include "poscarReader.h"
 
-void test_put_gto_sym_ortho(double *rxyz,
+void testPutGtoSymOrthoOrb(double *rxyz,
     double gw,
     double *xyz111,
     int ngx,
@@ -160,9 +160,7 @@ void runDft(PoscarFileType *pf)
   orbk   = malloc((ngx + 2) * ngy * ngz * sizeof(double));
   kinorb = malloc(ngx * ngy * ngz * sizeof(double));
 
-  putGtoSymOrtho(&rat[3 * 3], gw, rgcut, xyz111, ngx, ngy, ngz, &hgrid[0][0], orb);
-  for (int i = 0; i < ngx * ngy * ngz; i++)
-    orb[i] = orb[i] * sqrt(pow(gw * sqrt(2.0 * M_PI), 3));
+  putGtoSymOrthoOrb(&rat[3 * 3], gw, rgcut, xyz111, ngx, ngy, ngz, &hgrid[0][0], orb);
   anorm = 0.0;
   for (int i = 0; i < ngx * ngy * ngz; i++)
     anorm += orb[i] * orb[i];
@@ -204,7 +202,7 @@ void runDft(PoscarFileType *pf)
   printf("nat= %d\n", *pf->nat_o);
   printf("ekin= %20.10f  %20.10f  %14.5E\n", ekin, ekinAnalytical, ekin - ekinAnalytical);
 
-  test_put_gto_sym_ortho(&rat[3 * 3], gw, xyz111, ngx, ngy, ngz, &hgrid[0][0], orb);
+  testPutGtoSymOrthoOrb(&rat[3 * 3], gw, xyz111, ngx, ngy, ngz, &hgrid[0][0], orb);
 
   fftw_destroy_plan(planf);
   fftw_destroy_plan(planb);

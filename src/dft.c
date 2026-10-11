@@ -24,7 +24,7 @@ void testPutGtoSymOrthoOrb(double *rxyz,
     int ngy,
     int ngz,
     double *hgrid,
-    double *orb_i)
+    const double *orb_i)
 {
   int ll;
   double *waT, *wa, *orb;
@@ -158,8 +158,8 @@ void runDft(PoscarFileType *pf)
   int ngx, ngy, ngz;
   double xyz111[3];
   double hgrid[3][3];
-  double *orb, *orbk, *kinorb;
-  double gw, rgcut, anorm;
+  double **orbk, **kinorb;
+  double gw1, gw2, rgcut, anorm;
   double ekin, ekinAnalytical;
   double *rat     = *pf->rat_o;
   char (*sat)[5]  = *pf->sat_o;
@@ -167,8 +167,9 @@ void runDft(PoscarFileType *pf)
   electronState es;
   fftw_plan planf, planb;
 
-  gw    = 1.11 / BOHR2ANG * 0.5;
-  rgcut = 6.0 * gw;
+  gw1   = 1.11 / BOHR2ANG * 0.5;
+  gw2   = 1.11 / BOHR2ANG * 0.6;
+  rgcut = 6.0 * fmax(gw1, gw2);
   ngx   = 32;
   ngy   = 32;
   ngz   = 32;
@@ -189,45 +190,80 @@ void runDft(PoscarFileType *pf)
   xyz111[2] = 0.0;
 
   es.norb   = 2 * (*pf->nat_o);
+  es.gwall  = (double *)malloc(es.norb * sizeof(double));
   es.orbs   = (double **)malloc(es.norb * sizeof(double *));
   for (int iorb = 0; iorb < es.norb; iorb++) {
     es.orbs[iorb] = malloc(ngx * ngy * ngz * sizeof(double));
   }
+  for (int iorb = 0; iorb < es.norb; iorb++) {
+    if (iorb % 2 == 0) {
+      es.gwall[iorb] = gw1;
+    } else {
+      es.gwall[iorb] = gw2;
+    }
+  }
 
-  //orb         = malloc(ngx * ngy * ngz * sizeof(double));
-  orb    = es.orbs[0];
-  orbk   = malloc((ngx + 2) * ngy * ngz * sizeof(double));
-  kinorb = malloc(ngx * ngy * ngz * sizeof(double));
+  orbk = (double **)malloc(es.norb * sizeof(double *));
+  for (int iorb = 0; iorb < es.norb; iorb++) {
+    orbk[iorb] = malloc((ngx + 2) * ngy * ngz * sizeof(double));
+  }
+  kinorb = (double **)malloc(es.norb * sizeof(double *));
+  for (int iorb = 0; iorb < es.norb; iorb++) {
+    kinorb[iorb] = malloc(ngx * ngy * ngz * sizeof(double));
+  }
 
-  putGtoSymOrthoOrb(&rat[3 * 3], gw, rgcut, xyz111, ngx, ngy, ngz, &hgrid[0][0], orb);
+  putGtoSymOrthoOrb(
+      &rat[3 * 3], es.gwall[0], rgcut, xyz111, ngx, ngy, ngz, &hgrid[0][0], es.orbs[0]);
   anorm = 0.0;
   for (int i = 0; i < ngx * ngy * ngz; i++)
-    anorm += orb[i] * orb[i];
+    anorm += es.orbs[0][i] * es.orbs[0][i];
   anorm = sqrt(anorm * hgrid[0][0] * hgrid[1][1] * hgrid[2][2]);
   printf("anorm= %20.10f\n", anorm);
+  testPutGtoSymOrthoOrb(
+      &rat[3 * 3], es.gwall[0], xyz111, ngx, ngy, ngz, &hgrid[0][0], es.orbs[0]);
 
-  planf = fftw_plan_dft_r2c_3d(ngx, ngy, ngz, orb, (fftw_complex *)orbk, FFTW_ESTIMATE);
-  planb =
-      fftw_plan_dft_c2r_3d(ngx, ngy, ngz, (fftw_complex *)orbk, kinorb, FFTW_ESTIMATE);
+  for (int iorb = 0; iorb < es.norb; iorb++) {
+    putGtoSymOrthoOrb(&rat[iorb / 2],
+        es.gwall[iorb],
+        rgcut,
+        xyz111,
+        ngx,
+        ngy,
+        ngz,
+        &hgrid[0][0],
+        es.orbs[iorb]);
+  }
+  ekinAnalytical = 0.0;
+  for (int iorb = 0; iorb < es.norb; iorb++) {
+    double ekinSingle;
+    planf = fftw_plan_dft_r2c_3d(
+        ngx, ngy, ngz, es.orbs[iorb], (fftw_complex *)orbk[iorb], FFTW_ESTIMATE);
+    planb = fftw_plan_dft_c2r_3d(
+        ngx, ngy, ngz, (fftw_complex *)orbk[iorb], kinorb[iorb], FFTW_ESTIMATE);
 
-  ekin =
-      calKineticEnergyOrbSingle(ngx, ngy, ngz, hgrid, orb, orbk, kinorb, &planf, &planb);
-
-  ekinAnalytical = 3.0 / (4.0 * pow(gw, 5) * M_PI * sqrt(2.0 * M_PI)) *
-                   (pow(gw * sqrt(2.0 * M_PI), 3));
+    ekinSingle = calKineticEnergyOrbSingle(
+        ngx, ngy, ngz, hgrid, es.orbs[iorb], orbk[iorb], kinorb[iorb], &planf, &planb);
+    ekin += ekinSingle;
+    ekinAnalytical += 3.0 / (4.0 * pow(es.gwall[iorb], 5) * M_PI * sqrt(2.0 * M_PI)) *
+                      (pow(es.gwall[iorb] * sqrt(2.0 * M_PI), 3));
+  }
   printf("nat= %d\n", *pf->nat_o);
   printf("ekin= %20.10f  %20.10f  %14.5E\n", ekin, ekinAnalytical, ekin - ekinAnalytical);
-
-  testPutGtoSymOrthoOrb(&rat[3 * 3], gw, xyz111, ngx, ngy, ngz, &hgrid[0][0], orb);
 
   fftw_destroy_plan(planf);
   fftw_destroy_plan(planb);
 
+  free(es.gwall);
   for (int iorb = 0; iorb < es.norb; iorb++) {
     free(es.orbs[iorb]);
   }
   free(es.orbs);
-  //free(orb);
+  for (int iorb = 0; iorb < es.norb; iorb++) {
+    free(orbk[iorb]);
+  }
   free(orbk);
+  for (int iorb = 0; iorb < es.norb; iorb++) {
+    free(kinorb[iorb]);
+  }
   free(kinorb);
 }

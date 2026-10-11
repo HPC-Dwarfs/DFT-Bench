@@ -15,4 +15,14 @@ void putGtoSymOrtho(double *rxyz,
     double *hgrid,
     double *rho);
 
+void putGtoSymOrthoOrb(double *rxyz,
+    double gw,
+    double rgcut,
+    double *xyz111,
+    int ngx,
+    int ngy,
+    int ngz,
+    double *hgrid,
+    double *orb);
+
 #endif // __GTO_ON_GRID_H_

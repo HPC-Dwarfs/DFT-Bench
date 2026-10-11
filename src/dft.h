@@ -23,6 +23,7 @@ typedef struct {
   int ngx;
   int ngy;
   int ngz;
+  double *gwall;
   double **orbs;
 } electronState;
 

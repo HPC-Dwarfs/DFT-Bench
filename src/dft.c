@@ -165,7 +165,7 @@ void runDft(PoscarFileType *pf)
   char (*sat)[5]  = *pf->sat_o;
   double (*cv)[3] = (double (*)[3])pf->cellvec;
   electronState es;
-  fftw_plan planf, planb;
+  fftw_plan *planf, *planb;
 
   gw1   = 1.11 / BOHR2ANG * 0.5;
   gw2   = 1.11 / BOHR2ANG * 0.6;
@@ -190,6 +190,8 @@ void runDft(PoscarFileType *pf)
   xyz111[2] = 0.0;
 
   es.norb   = 2 * (*pf->nat_o);
+  planf     = (fftw_plan *)malloc(es.norb * sizeof(fftw_plan));
+  planb     = (fftw_plan *)malloc(es.norb * sizeof(fftw_plan));
   es.gwall  = (double *)malloc(es.norb * sizeof(double));
   es.orbs   = (double **)malloc(es.norb * sizeof(double *));
   for (int iorb = 0; iorb < es.norb; iorb++) {
@@ -233,16 +235,26 @@ void runDft(PoscarFileType *pf)
         &hgrid[0][0],
         es.orbs[iorb]);
   }
+  for (int iorb = 0; iorb < es.norb; iorb++) {
+    planf[iorb] = fftw_plan_dft_r2c_3d(
+        ngx, ngy, ngz, es.orbs[iorb], (fftw_complex *)orbk[iorb], FFTW_ESTIMATE);
+    planb[iorb] = fftw_plan_dft_c2r_3d(
+        ngx, ngy, ngz, (fftw_complex *)orbk[iorb], kinorb[iorb], FFTW_ESTIMATE);
+  }
+
   ekinAnalytical = 0.0;
+  ekin           = 0.0;
   for (int iorb = 0; iorb < es.norb; iorb++) {
     double ekinSingle;
-    planf = fftw_plan_dft_r2c_3d(
-        ngx, ngy, ngz, es.orbs[iorb], (fftw_complex *)orbk[iorb], FFTW_ESTIMATE);
-    planb = fftw_plan_dft_c2r_3d(
-        ngx, ngy, ngz, (fftw_complex *)orbk[iorb], kinorb[iorb], FFTW_ESTIMATE);
-
-    ekinSingle = calKineticEnergyOrbSingle(
-        ngx, ngy, ngz, hgrid, es.orbs[iorb], orbk[iorb], kinorb[iorb], &planf, &planb);
+    ekinSingle = calKineticEnergyOrbSingle(ngx,
+        ngy,
+        ngz,
+        hgrid,
+        es.orbs[iorb],
+        orbk[iorb],
+        kinorb[iorb],
+        &planf[iorb],
+        &planb[iorb]);
     ekin += ekinSingle;
     ekinAnalytical += 3.0 / (4.0 * pow(es.gwall[iorb], 5) * M_PI * sqrt(2.0 * M_PI)) *
                       (pow(es.gwall[iorb] * sqrt(2.0 * M_PI), 3));
@@ -250,8 +262,10 @@ void runDft(PoscarFileType *pf)
   printf("nat= %d\n", *pf->nat_o);
   printf("ekin= %20.10f  %20.10f  %14.5E\n", ekin, ekinAnalytical, ekin - ekinAnalytical);
 
-  fftw_destroy_plan(planf);
-  fftw_destroy_plan(planb);
+  for (int iorb = 0; iorb < es.norb; iorb++) {
+    fftw_destroy_plan(planf[iorb]);
+    fftw_destroy_plan(planb[iorb]);
+  }
 
   free(es.gwall);
   for (int iorb = 0; iorb < es.norb; iorb++) {
@@ -266,4 +280,6 @@ void runDft(PoscarFileType *pf)
     free(kinorb[iorb]);
   }
   free(kinorb);
+  free(planf);
+  free(planb);
 }

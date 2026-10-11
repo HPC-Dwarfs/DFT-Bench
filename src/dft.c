@@ -113,15 +113,54 @@ void testPutGtoSymOrthoOrb(double *rxyz,
   free(waT);
   free(orb);
 }
+double calKineticEnergyOrbSingle(int ngx,
+    int ngy,
+    int ngz,
+    double (*hgrid)[3],
+    double *orb,
+    double *orbk,
+    double *kinorb,
+    fftw_plan *planf,
+    fftw_plan *planb)
+{
+  int igxt, igyt, igzt;
+  double akx, aky, akz, aknorm2, ekin;
+  fftw_execute(*planf);
+  for (int igz = 0; igz < ngz; igz++) {
+    for (int igy = 0; igy < ngy; igy++) {
+      for (int igx = 0; igx < ngx; igx++) {
+        igxt = igx;
+        igyt = igy;
+        igzt = igz;
+        if (igy > ngy / 2 - 1)
+          igyt = ngy - igy;
+        if (igz > ngz / 2 - 1)
+          igzt = ngz - igz;
+        akx     = 2.0 * M_PI * (igxt / 2) / ((double)ngx * hgrid[0][0]);
+        aky     = 2.0 * M_PI * (igyt) / ((double)ngy * hgrid[1][1]);
+        akz     = 2.0 * M_PI * (igzt) / ((double)ngz * hgrid[2][2]);
+        aknorm2 = akx * akx + aky * aky + akz * akz;
+        orbk[igz * (ngx + 2) * ngy + igy * (ngx + 2) + igx] *= 0.5 * aknorm2;
+      }
+    }
+  }
+  fftw_execute(*planb);
+  for (int i = 0; i < ngx * ngy * ngz; i++)
+    kinorb[i] *= 1.0 / (double)(ngx * ngy * ngz);
+  ekin = 0.0;
+  for (int i = 0; i < ngx * ngy * ngz; i++)
+    ekin += orb[i] * kinorb[i];
+  ekin *= (hgrid[0][0] * hgrid[1][1] * hgrid[2][2]);
+  return ekin;
+}
 void runDft(PoscarFileType *pf)
 {
   int ngx, ngy, ngz;
-  int igxt, igyt, igzt;
   double xyz111[3];
   double hgrid[3][3];
   double *orb, *orbk, *kinorb;
   double gw, rgcut, anorm;
-  double akx, aky, akz, aknorm2, ekin, ekinAnalytical;
+  double ekin, ekinAnalytical;
   double *rat     = *pf->rat_o;
   char (*sat)[5]  = *pf->sat_o;
   double (*cv)[3] = (double (*)[3])pf->cellvec;
@@ -171,34 +210,11 @@ void runDft(PoscarFileType *pf)
   planb =
       fftw_plan_dft_c2r_3d(ngx, ngy, ngz, (fftw_complex *)orbk, kinorb, FFTW_ESTIMATE);
 
-  fftw_execute(planf);
-  for (int igz = 0; igz < ngz; igz++) {
-    for (int igy = 0; igy < ngy; igy++) {
-      for (int igx = 0; igx < ngx; igx++) {
-        igxt = igx;
-        igyt = igy;
-        igzt = igz;
-        if (igy > ngy / 2 - 1)
-          igyt = ngy - igy;
-        if (igz > ngz / 2 - 1)
-          igzt = ngz - igz;
-        akx     = 2.0 * M_PI * (igxt / 2) / ((double)ngx * hgrid[0][0]);
-        aky     = 2.0 * M_PI * (igyt) / ((double)ngy * hgrid[1][1]);
-        akz     = 2.0 * M_PI * (igzt) / ((double)ngz * hgrid[2][2]);
-        aknorm2 = akx * akx + aky * aky + akz * akz;
-        orbk[igz * (ngx + 2) * ngy + igy * (ngx + 2) + igx] *= 0.5 * aknorm2;
-      }
-    }
-  }
+  ekin =
+      calKineticEnergyOrbSingle(ngx, ngy, ngz, hgrid, orb, orbk, kinorb, &planf, &planb);
+
   ekinAnalytical = 3.0 / (4.0 * pow(gw, 5) * M_PI * sqrt(2.0 * M_PI)) *
                    (pow(gw * sqrt(2.0 * M_PI), 3));
-  fftw_execute(planb);
-  ekin = 0.0;
-  for (int i = 0; i < ngx * ngy * ngz; i++)
-    kinorb[i] *= 1.0 / (double)(ngx * ngy * ngz);
-  for (int i = 0; i < ngx * ngy * ngz; i++)
-    ekin += orb[i] * kinorb[i];
-  ekin *= (hgrid[0][0] * hgrid[1][1] * hgrid[2][2]);
   printf("nat= %d\n", *pf->nat_o);
   printf("ekin= %20.10f  %20.10f  %14.5E\n", ekin, ekinAnalytical, ekin - ekinAnalytical);
 

@@ -15,7 +15,31 @@
 #include "constants.h"
 #include "dft.h"
 #include "gtoOnGrid.h"
+#include "mkl_cblas.h"
 #include "poscarReader.h"
+
+extern void dsyev(char *jobz,
+    char *uplo,
+    int *n,
+    double *a,
+    int *lda,
+    double *w,
+    double *work,
+    int *lwork,
+    int *info);
+extern void dgemm(char *transa,
+    char *transb,
+    int *m,
+    int *n,
+    int *k,
+    double *alpha,
+    const double *a,
+    int *lda,
+    const double *b,
+    int *ldb,
+    double *beta,
+    double *c,
+    int *ldc);
 
 void testPutGtoSymOrthoOrb(double *rxyz,
     double gw,
@@ -117,7 +141,7 @@ double calKineticEnergyOrbSingle(int ngx,
     int ngy,
     int ngz,
     double (*hgrid)[3],
-    double *orb,
+    const double *orb,
     double *orbk,
     double *kinorb,
     fftw_plan *planf,
@@ -152,6 +176,138 @@ double calKineticEnergyOrbSingle(int ngx,
     ekin += orb[i] * kinorb[i];
   ekin *= (hgrid[0][0] * hgrid[1][1] * hgrid[2][2]);
   return ekin;
+}
+void getOverlap(electronState *es, double voxel, int ngtot, double *overlap)
+{
+  for (int iorb = 0; iorb < es->norb; iorb++) {
+    for (int jorb = 0; jorb <= iorb; jorb++) {
+      double ttdot;
+      ttdot = cblas_ddot(ngtot, es->orbs[iorb], 1, es->orbs[jorb], 1);
+      overlap[iorb * es->norb + jorb] = ttdot * voxel;
+    }
+  }
+  for (int iorb = 0; iorb < es->norb; iorb++) {
+    for (int jorb = 0; jorb <= iorb; jorb++) {
+      overlap[jorb * es->norb + iorb] = overlap[iorb * es->norb + jorb];
+    }
+  }
+}
+void orthogonalizeLoewdin(electronState *es, double voxel, int ngx, int ngy, int ngz)
+{
+  double *overlap;
+  overlap   = (double *)malloc(es->norb * es->norb * sizeof(double));
+  int ngtot = ngx * ngy * ngz;
+  getOverlap(es, voxel, ngtot, overlap);
+  for (int iorb = 0; iorb < es->norb; iorb++) {
+    for (int jorb = 0; jorb < es->norb; jorb++) {
+      printf("%6.2f", overlap[iorb * es->norb + jorb]);
+    }
+    printf("\n");
+  }
+  int info, nwa;
+  double *wa1, *wa2, *eval;
+  nwa       = es->norb * es->norb + 100;
+  wa1       = (double *)malloc(nwa * sizeof(double));
+  wa2       = (double *)malloc(nwa * sizeof(double));
+  eval      = (double *)malloc(es->norb * sizeof(double));
+  char jobz = 'V';
+  char uplo = 'U';
+  dsyev(&jobz, &uplo, &es->norb, overlap, &es->norb, eval, wa1, &nwa, &info);
+  //for (int iorb = 0; iorb < es->norb; iorb++) {
+  //  printf("evec %4d",iorb+1);
+  //  for (int jorb = 0; jorb < es->norb; jorb++) {
+  //    printf("%6.2f",overlap[iorb*es->norb+jorb]);
+  //  }
+  //  printf("\n");
+  //}
+  if (info != 0) {
+    printf("ERROR: info=%d in dsyev used for Loewdin orthogonalization", info);
+    exit(1);
+  }
+  for (int iorb = 0; iorb < es->norb; iorb++) {
+    printf("%5d%8.3f\n", iorb, eval[iorb]);
+  }
+  for (int i = 0; i < es->norb * es->norb; i++) {
+    wa1[i] = overlap[i];
+  }
+  for (int iorb = 0; iorb < es->norb; iorb++) {
+    for (int jorb = 0; jorb < es->norb; jorb++) {
+      overlap[iorb * es->norb + jorb] = wa1[jorb * es->norb + iorb];
+    }
+  }
+  for (int iorb = 0; iorb < es->norb; iorb++) {
+    for (int jorb = 0; jorb < es->norb; jorb++) {
+      wa1[iorb * es->norb + jorb] =
+          overlap[iorb * es->norb + jorb] * sqrt(1.0 / eval[jorb]);
+    }
+  }
+  char noTrans = 'N';
+  char doTrans = 'T';
+  double one   = 1.0;
+  double zero  = 0.0;
+  dgemm(&doTrans,
+      &noTrans,
+      &es->norb,
+      &es->norb,
+      &es->norb,
+      &one,
+      wa1,
+      &es->norb,
+      overlap,
+      &es->norb,
+      &zero,
+      wa2,
+      &es->norb);
+  double *orbst1, *orbst2;
+  orbst1 = (double *)malloc((ngx * ngy * ngz * es->norb) * sizeof(double));
+  orbst2 = (double *)malloc((ngx * ngy * ngz * es->norb) * sizeof(double));
+  for (int iorb = 0; iorb < es->norb; iorb++) {
+    for (int i = 0; i < ngx * ngy * ngz; i++) {
+      orbst1[i * es->norb + iorb] = es->orbs[iorb][i];
+    }
+  }
+  dgemm(&doTrans,
+      &noTrans,
+      &es->norb,
+      &ngtot,
+      &es->norb,
+      &one,
+      wa2,
+      &es->norb,
+      orbst1,
+      &es->norb,
+      &zero,
+      orbst2,
+      &es->norb);
+  for (int iorb = 0; iorb < es->norb; iorb++) {
+    for (int i = 0; i < ngx * ngy * ngz; i++) {
+      es->orbs[iorb][i] = orbst2[i * es->norb + iorb];
+    }
+  }
+  //for (int iorb = 0; iorb < es->norb; iorb++) {
+  //  printf("orbst2 %4d\n",iorb+1);
+  //  for (int i = 0; i < ngx * ngy * ngz; i++) {
+  //    printf("%15.5f\n",orbst2[i * es->norb + iorb]);
+  //  }
+  //}
+  printf("-----------------------------------------------------------------\n");
+  getOverlap(es, voxel, ngtot, overlap);
+  for (int iorb = 0; iorb < es->norb; iorb++) {
+    for (int jorb = 0; jorb < es->norb; jorb++) {
+      double tt;
+      tt = overlap[iorb * es->norb + jorb];
+      if (fabs(tt) < 1.E-12)
+        tt = 0.0;
+      printf("%6.2f", tt);
+    }
+    printf("\n");
+  }
+  free(orbst1);
+  free(orbst2);
+  free(overlap);
+  free(wa1);
+  free(wa2);
+  free(eval);
 }
 void runDft(PoscarFileType *pf)
 {
@@ -261,6 +417,9 @@ void runDft(PoscarFileType *pf)
   }
   printf("nat= %d\n", *pf->nat_o);
   printf("ekin= %20.10f  %20.10f  %14.5E\n", ekin, ekinAnalytical, ekin - ekinAnalytical);
+
+  double voxel = hgrid[0][0] * hgrid[1][1] * hgrid[2][2];
+  orthogonalizeLoewdin(&es, voxel, ngx, ngy, ngz);
 
   for (int iorb = 0; iorb < es.norb; iorb++) {
     fftw_destroy_plan(planf[iorb]);

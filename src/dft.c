@@ -381,7 +381,7 @@ void runDft(PoscarFileType *pf)
       &rat[3 * 3], es.gwall[0], xyz111, ngx, ngy, ngz, &hgrid[0][0], es.orbs[0]);
 
   for (int iorb = 0; iorb < es.norb; iorb++) {
-    putGtoSymOrthoOrb(&rat[iorb / 2],
+    putGtoSymOrthoOrb(&rat[(iorb / 2)*3],
         es.gwall[iorb],
         rgcut,
         xyz111,

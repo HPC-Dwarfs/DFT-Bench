@@ -21,3 +21,5 @@
 #define CHECK_MAX_EPSILON 1.e-8
 
 #define MAXSTRLEN 40
+
+#define BOHR2ANG 0.529177210

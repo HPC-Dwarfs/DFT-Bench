@@ -16,8 +16,11 @@
 #endif
 
 #include "constants.h"
+#include "dft.h"
+#include "poscarReader.h"
 
-int main(const int argc, char **argv) {
+int main(const int argc, char **argv)
+{
   const size_t bytesPerWord = sizeof(double);
 
 #ifdef _OPENMP
@@ -35,15 +38,25 @@ int main(const int argc, char **argv) {
     int i = omp_get_thread_num();
 #pragma omp critical
     {
-      printf("Thread %d running on processor %d\n", i,
-             affinity_getProcessorId());
+      printf("Thread %d running on processor %d\n", i, affinity_getProcessorId());
       affinity_getmask();
     }
   }
 #endif
 #endif
 
-  printf("Hi there, I'm running with %zu threads\n", numThreads);
+  int nat;
+  double *rat       = NULL;
+  char (*sat)[5]    = NULL;
+  double cellvec[9] = { 0 };
+  PoscarFileType pf = { .nat_o = &nat, .rat_o = &rat, .sat_o = &sat, .cellvec = cellvec };
+
+  readPoscarFile("poscars/POSCAR-0008-mp-149", &pf);
+
+  runDft(&pf);
+
+  free(rat);
+  free(sat);
 
   return EXIT_SUCCESS;
 }

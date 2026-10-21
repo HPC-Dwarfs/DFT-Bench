@@ -4,8 +4,8 @@
 # license that can be found in the LICENSE file.
 
 #CONFIGURE BUILD SYSTEM
-TARGET	   = dftbench-$(TOOLCHAIN)
-BUILD_DIR  = ./build/$(TOOLCHAIN)
+TARGET	   = dftbench-$(TOOLCHAIN)$(MPI_SUFFIX)
+BUILD_DIR  = ./build/$(TOOLCHAIN)$(MPI_SUFFIX)
 SRC_DIR    = ./src
 MAKE_DIR   = ./mk
 Q         ?= @
@@ -24,13 +24,16 @@ $(error Stopping after creating config.mk - please review and run make again)
 endif
 include config.mk
 include $(MAKE_DIR)/include_$(TOOLCHAIN).mk
+include $(MAKE_DIR)/include_MPI.mk
 include $(MAKE_DIR)/include_LIKWID.mk
 include $(MAKE_DIR)/include_BLAS.mk
+include $(MAKE_DIR)/include_EIGEN.mk
 CFLAGS    += -Wall -Wextra
 
 VPATH     = $(SRC_DIR)
-ASM       = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.s,$(wildcard $(SRC_DIR)/*.c))
-OBJ       = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o,$(wildcard $(SRC_DIR)/*.c))
+CSRC      = $(filter-out $(addprefix $(SRC_DIR)/,$(EIGEN_EXCLUDE)),$(wildcard $(SRC_DIR)/*.c))
+ASM       = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.s,$(CSRC))
+OBJ       = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o,$(CSRC))
 SRC       =  $(wildcard $(SRC_DIR)/*.h $(SRC_DIR)/*.c)
 CPPFLAGS := $(CPPFLAGS) $(DEFINES) $(OPTIONS) $(INCLUDES)
 c := ,
@@ -46,7 +49,17 @@ ${TARGET}: $(BUILD_DIR) .clangd $(OBJ)
 	$(info ===>  LINKING  $(TARGET))
 	$(Q)${LD} ${LFLAGS} -o $(TARGET) $(OBJ) $(LIBS)
 
-$(BUILD_DIR)/%.o:  %.c $(MAKE_DIR)/include_$(TOOLCHAIN).mk $(MAKE_DIR)/include_BLAS.mk config.mk
+MK_DEPS   = $(addprefix $(MAKE_DIR)/,include_$(TOOLCHAIN).mk include_MPI.mk include_BLAS.mk include_EIGEN.mk) config.mk
+
+# Recompile when the flags change, e.g. EIGEN_SOLVER given on the command line
+FLAGS_STAMP = $(BUILD_DIR)/.flags
+FLAGS_LINE  = $(CC) $(CPPFLAGS) $(CFLAGS)
+ifneq ($(FLAGS_LINE),$(shell cat $(FLAGS_STAMP) 2>/dev/null))
+$(shell mkdir -p $(BUILD_DIR) && echo '$(FLAGS_LINE)' > $(FLAGS_STAMP))
+endif
+MK_DEPS  += $(FLAGS_STAMP)
+
+$(BUILD_DIR)/%.o:  %.c $(MK_DEPS)
 	$(info ===>  COMPILE  $@)
 	$(Q)$(CC) -c $(CPPFLAGS) $(CFLAGS) $< -o $@
 	$(Q)$(CC) $(CPPFLAGS) -MT $(@:.d=.o) -MM  $< > $(BUILD_DIR)/$*.d

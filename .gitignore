@@ -57,3 +57,4 @@ config.mk
 /.cache/clangd/index
 /compile_commands.json
 /dftbench-*
+/build/

@@ -19,10 +19,24 @@
 /* Row block size of the blocked orbital rotation Psi <- Psi * S^{-1/2} */
 #define ROTATE_BLOCK 4096
 
+/* Edge length of the tiles of S that one rank computes in the overlap phase */
+#define OVERLAP_TILE 512
+
+/* Distributed eigensolvers: block size of the block-cyclic distribution, and the
+ * default process grid holds about EIGEN_BLOCK_TARGET^2 elements per grid rank */
+#define EIGEN_NB 64
+#define EIGEN_BLOCK_TARGET 512
+/* Largest matrix that is checked against the LAPACK reference with -c */
+#define EIGEN_REFERENCE_MAX 4096
+
+/* Default memory budget of the MPI build: fraction of the node's physical memory */
+#define DEFAULT_MEMORY_FRACTION 0.8
+
 /* Tolerances of the validation checks (-c) */
 #define TOL_GTO_RESIDUAL 1.0E-12 /* max |psi - ref| / max |ref| */
 #define TOL_NORM 1.0E-8 /* |1 - <psi|psi>| */
 #define TOL_EKIN 1.0E-6 /* relative error of the kinetic energy */
 #define TOL_ORTHO 1.0E-10 /* max |S - I| after orthogonalization */
+#define TOL_EIGEN_REF 1.0E-10 /* distributed eigensolver vs. LAPACK reference */
 
 #endif // __CONSTANTS_H_

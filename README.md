@@ -17,8 +17,9 @@ The grid spacing is fixed, so the number of grid points N grows linearly with th
 number of atoms. The cost of the overlap and rotation phases is therefore O(N_atoms³),
 as in production DFT codes.
 
-This is the sequential version of the benchmark: it runs on a single core and
-contains no threading.
+The default build is sequential: it runs on a single core and contains no threading.
+The MPI build (`ENABLE_MPI=true`) distributes the orbitals over many nodes, see
+[MPI version](#mpi-version).
 
 ## Getting Started
 
@@ -153,5 +154,158 @@ and orbital memory at the default spacing of 0.3 bohr:
 | 1728  | 3456     | 216³  | 259 GB         |
 
 The larger inputs (2744 to 8000 atoms) need several TB at this spacing. They are
-intended for a future distributed-memory version or can be run with a coarser grid
-(`-g`), which fails the kinetic-energy validation.
+intended for the MPI version or can be run with a coarser grid (`-g`), which fails
+the kinetic-energy validation.
+
+## MPI version
+
+### Build
+
+```make
+# Distributed-memory (MPI) build, binary dftbench-<TOOLCHAIN>-MPI
+ENABLE_MPI ?= false
+# MPI compiler wrapper (default: mpicc, mpiicx for TOOLCHAIN=ICX)
+#MPICC ?= mpicc
+
+# Eigensolver of the Loewdin eigen phase. Supported: LAPACK, SCALAPACK, ELPA
+# SCALAPACK and ELPA require ENABLE_MPI=true.
+EIGEN_SOLVER ?= LAPACK
+# BLACS layer of MKL's ScaLAPACK for BLAS=MKL. Supported: openmpi, intelmpi
+MKL_BLACS ?= openmpi
+# Installation prefixes of ScaLAPACK (for BLAS=OPENBLAS) and ELPA (leave empty for system paths)
+SCALAPACK_ROOT ?=
+ELPA_ROOT ?=
+```
+
+- `ENABLE_MPI=true` compiles and links with the MPI compiler wrapper of the tool chain
+  (`MPICC` overrides it) and needs MPI-3 shared-memory windows. The binary is
+  `dftbench-<TOOLCHAIN>-MPI`, its objects go to `./build/<TOOLCHAIN>-MPI`, so the
+  sequential and the MPI build of a tool chain coexist.
+- `EIGEN_SOLVER` selects the backend of the eigen phase:
+  - `LAPACK` (default): `dsyevd` on rank 0, X is broadcast to all nodes.
+  - `SCALAPACK`: `pdsyevd` on a 2D BLACS process grid. `BLAS=MKL` links MKL's
+    ScaLAPACK and the BLACS layer `MKL_BLACS`, which must match the MPI library.
+    Otherwise `-lscalapack` is linked from `SCALAPACK_ROOT`.
+  - `ELPA`: the ELPA 2-stage solver on the same grid, linked from `ELPA_ROOT` in
+    addition to ScaLAPACK.
+
+Examples (command line variables override `config.mk`), the second one for Homebrew
+on macOS, whose ScaLAPACK is built with Homebrew's Open MPI:
+
+```sh
+make TOOLCHAIN=CLANG BLAS=OPENBLAS ENABLE_MPI=true
+make TOOLCHAIN=CLANG BLAS=OPENBLAS ENABLE_MPI=true EIGEN_SOLVER=SCALAPACK \
+     MPICC=/opt/homebrew/bin/mpicc SCALAPACK_ROOT=/opt/homebrew/opt/scalapack
+```
+
+The ScaLAPACK library must be built for the same MPI library as `MPICC`, and the
+program must be started with that library's `mpirun`. With `BLAS=MKL`, set
+`MKL_BLACS=intelmpi` for Intel MPI.
+
+### Usage
+
+The MPI build accepts the options of the sequential build and additionally:
+
+```
+MPI options:
+  -s <n>        at most n ranks per shared-memory group (default: node)
+  -m <GB>       memory budget per group (default: 80% of node memory)
+  -e <pr>x<pc>  eigensolver process grid (default: about 512^2 elements per rank)
+  -p <mode>     eigensolver rank placement: packed or spread (default: packed)
+```
+
+```sh
+mpirun -np 4 ./dftbench-CLANG-MPI -f poscars/POSCAR-0064-mp-149 -c
+mpirun -np 8 ./dftbench-CLANG-MPI -f poscars/POSCAR-0064-mp-149 -c -s 4
+mpirun -np 8 ./dftbench-CLANG-MPI -f poscars/POSCAR-0064-mp-149 -c -s 4 -m 0.25
+```
+
+Only rank 0 prints. The header additionally reports the ranks, the shared-memory
+groups, the transpose mode, the memory budget and use per group and the eigensolver.
+
+### Decomposition
+
+The ranks of a node form a shared-memory group, which holds one copy of the orbitals,
+of S and of X in MPI-3 shared windows. `-s <n>` splits the node into groups of at most
+n ranks, e.g. one group per socket, or several groups on one machine to test the
+multi-node code paths: `-s 2` on 6 ranks behaves like 3 nodes.
+
+Orbitals and grid points are split over the groups in proportion to their ranks. The
+orbitals are held in two forms:
+
+- **orbital form**, whole orbitals per group and rank, used by `gto` and `kinetic`,
+- **transposed form**, all orbitals at the group's grid points, used by `overlap` and
+  `rotate`.
+
+With a single group both forms are the same memory and no data is moved between
+ranks. With several groups the `transpose` and `untranspose` phases move the rows of
+other groups with `MPI_Alltoallv`. The overlap tiles of a group are summed over the
+groups (`reduce`), the eigen phase computes X, and `gather` distributes it to all
+groups. Each group needs the orbitals of its share (orbital form), the transposed form
+and S, X:
+
+- **stored mode**: the transposed form is kept from `overlap` to `rotate`, two
+  transposes per repetition.
+- **streamed mode**: if the stored mode does not fit into the memory budget, the
+  transposed form is processed in chunks of grid rows. It needs about half the memory
+  and three transposes per repetition.
+
+The budget defaults to 80 % of the node memory divided by the groups on the node,
+`-m` sets it per group in GB. The program picks the stored mode if it fits, otherwise
+the streamed mode with the fewest chunks that fit, and stops if the orbitals of a
+group alone exceed the budget.
+
+### Eigensolver grid
+
+With `SCALAPACK` or `ELPA` the eigen phase runs on a `pr x pc` subset of the ranks.
+By default the grid is square, with about 512 x 512 matrix elements per grid rank and
+at most all ranks, e.g. 2 x 2 for 1024 orbitals on 4 or more ranks. `-e pr x pc` sets
+it, `-p packed` takes the grid ranks from as few groups as possible and `-p spread`
+round-robin from all groups. The other ranks wait for the result. With `LAPACK`, `-e`
+and `-p` have no effect.
+
+```sh
+mpirun -np 8 ./dftbench-CLANG-MPI -f poscars/POSCAR-0064-mp-149 -c -e 2x3
+mpirun -np 8 ./dftbench-CLANG-MPI -f poscars/POSCAR-0064-mp-149 -c -s 4 -e 2x2 -p spread
+```
+
+With `-c` and at most 4096 orbitals, the distributed backends are additionally
+checked against the LAPACK path (eigenvalues and X, tolerance 1e-10), outside the
+timed phases.
+
+### Timing
+
+The MPI build reports nine phases:
+
+| Phase         | Operation                                                    |
+| ------------- | ------------------------------------------------------------ |
+| `gto`         | place the orbitals of each rank                              |
+| `transpose`   | orbital form to transposed form, between groups              |
+| `overlap`     | tiles of S over the group's grid points (`dsyrk`, `dgemm`)   |
+| `reduce`      | sum S over the groups (`MPI_Allreduce`, in parallel lanes)   |
+| `eigen`       | eigendecomposition and X = S^{-1/2}                          |
+| `gather`      | distribute X to all groups                                   |
+| `rotate`      | Ψ ← Ψ · X on the rows of each rank                           |
+| `untranspose` | transposed form back to orbital form                         |
+| `kinetic`     | kinetic energy of the orbitals of each rank                  |
+
+Every phase starts after a barrier, and its time is the maximum over the ranks. In
+the streamed mode the transposes alternate with `overlap` and `rotate` per chunk; the
+time per phase is accumulated. Phases that do not occur are reported with zero time,
+e.g. `transpose` with a single group. GFLOP/s is computed from the same global flop
+counts as in the sequential build; GB/s from the bytes moved between groups. With
+`ENABLE_LIKWID=true` every phase is a marker region on every rank:
+
+```sh
+likwid-mpirun -np 4 -g FLOPS_DP -m ./dftbench-GCC-MPI -f poscars/POSCAR-0216-mp-149
+```
+
+### Scaling limits
+
+- `gto` and `kinetic` distribute whole orbitals. Ranks beyond the number of orbitals
+  idle in these phases; the program prints how many.
+- `overlap` distributes tiles of 512 x 512 elements of S over the ranks of a group.
+  Inputs with fewer orbitals than 512 compute the overlap on one rank per group.
+- The eigen phase is a dense eigensolve of n x n with n orbitals. With `LAPACK` it
+  runs on one rank, with `SCALAPACK` or `ELPA` on the eigen grid. It is the phase
+  that stops scaling first, which is intended: real DFT codes face the same limit.

@@ -7,7 +7,7 @@
 
 #ifdef _OPENMP
 
-extern int affinity_getProcessorId();
+extern int affinity_getProcessorId(void);
 extern void affinity_pinProcess(int);
 extern void affinity_pinThread(int);
 extern void affinity_getmask(void);

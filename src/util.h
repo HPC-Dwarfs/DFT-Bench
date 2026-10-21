@@ -7,18 +7,6 @@
 
 #define HLINE "------------------------------------------------------------------------\n"
 
-#define BANNER                                                                           \
-  "_|                            _|_|_|                                  _|  "           \
-  "      \n"                                                                             \
-  "_|_|_|    _|      _|      _|  _|    _|    _|_|    _|_|_|      _|_|_|  "               \
-  "_|_|_|    \n"                                                                         \
-  "_|    _|  _|      _|      _|  _|_|_|    _|_|_|_|  _|    _|  _|        _|  "           \
-  "  _|  \n"                                                                             \
-  "_|    _|    _|  _|  _|  _|    _|    _|  _|        _|    _|  _|        _|  "           \
-  "  _|  \n"                                                                             \
-  "_|_|_|        _|      _|      _|_|_|      _|_|_|  _|    _|    _|_|_|  _|  "           \
-  "  _|  \n"
-
 #ifndef MIN
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
 #endif
@@ -30,11 +18,5 @@
 #ifndef ABS
 #define ABS(a) ((a) >= 0 ? (a) : -(a))
 #endif
-
-#define DEBUG_MESSAGE debug_printf
-#define FPRINTF(...)                                                                     \
-  if (fprintf(__VA_ARGS__) < 0) {                                                        \
-    printf("%s:%d Error writing to file\n", __FILE__, __LINE__);                         \
-  }
 
 #endif

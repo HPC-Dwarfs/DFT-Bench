@@ -15,20 +15,7 @@
 
 #define gettid() syscall(SYS_gettid)
 
-static int getProcessorID(cpu_set_t *cpu_set)
-{
-  int processorId;
-  int nproc = sysconf(_SC_NPROCESSORS_ONLN);
-
-  for (processorId = 0; processorId < nproc; processorId++) {
-    if (CPU_ISSET(processorId, cpu_set)) {
-      break;
-    }
-  }
-  return processorId;
-}
-
-int affinity_getProcessorId()
+int affinity_getProcessorId(void)
 {
   return sched_getcpu();
 }

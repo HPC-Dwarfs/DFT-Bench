@@ -56,4 +56,4 @@ dkms.conf
 config.mk
 /.cache/clangd/index
 /compile_commands.json
-/dftbench-CLANG
+/dftbench-*

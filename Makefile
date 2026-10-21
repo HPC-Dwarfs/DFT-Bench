@@ -25,11 +25,12 @@ endif
 include config.mk
 include $(MAKE_DIR)/include_$(TOOLCHAIN).mk
 include $(MAKE_DIR)/include_LIKWID.mk
-INCLUDES  += -I$(SRC_DIR)/includes -I$(BUILD_DIR)
+include $(MAKE_DIR)/include_BLAS.mk
+CFLAGS    += -Wall -Wextra
 
 VPATH     = $(SRC_DIR)
 ASM       = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.s,$(wildcard $(SRC_DIR)/*.c))
-OBJ       = $(filter-out $(BUILD_DIR)/kernels-%.o,$(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o,$(wildcard $(SRC_DIR)/*.c)))
+OBJ       = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o,$(wildcard $(SRC_DIR)/*.c))
 SRC       =  $(wildcard $(SRC_DIR)/*.h $(SRC_DIR)/*.c)
 CPPFLAGS := $(CPPFLAGS) $(DEFINES) $(OPTIONS) $(INCLUDES)
 c := ,
@@ -41,18 +42,18 @@ CompileFlags:
   Compiler: clang
 endef
 
-${TARGET}: $(BUILD_DIR) .clangd $(OBJ) $(DATA_DIR)
+${TARGET}: $(BUILD_DIR) .clangd $(OBJ)
 	$(info ===>  LINKING  $(TARGET))
 	$(Q)${LD} ${LFLAGS} -o $(TARGET) $(OBJ) $(LIBS)
 
-$(BUILD_DIR)/%.o:  %.c $(MAKE_DIR)/include_$(TOOLCHAIN).mk config.mk
+$(BUILD_DIR)/%.o:  %.c $(MAKE_DIR)/include_$(TOOLCHAIN).mk $(MAKE_DIR)/include_BLAS.mk config.mk
 	$(info ===>  COMPILE  $@)
-	$(CC) -c $(CPPFLAGS) $(CFLAGS) $< -o $@
+	$(Q)$(CC) -c $(CPPFLAGS) $(CFLAGS) $< -o $@
 	$(Q)$(CC) $(CPPFLAGS) -MT $(@:.d=.o) -MM  $< > $(BUILD_DIR)/$*.d
 
 $(BUILD_DIR)/%.s:  %.c
 	$(info ===>  GENERATE ASM  $@)
-	$(CC) -S $(CPPFLAGS) $(CFLAGS) $< -o $@
+	$(Q)$(CC) -S $(CPPFLAGS) $(CFLAGS) $< -o $@
 
 .PHONY: clean distclean info asm format
 

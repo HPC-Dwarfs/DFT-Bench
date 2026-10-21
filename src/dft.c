@@ -9,10 +9,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef _OPENMP
-#include <omp.h>
-#endif
-
 #include "allocate.h"
 #include "blasLapack.h"
 #include "constants.h"
@@ -30,9 +26,8 @@ static const char *const PHASE_NAMES[NPHASES] = {
 
 typedef struct {
   fftw_plan planf, planb;
-  int nthreads;
-  double **rbuf; /* per-thread T|psi> in real space */
-  fftw_complex **cbuf; /* per-thread psi in reciprocal space */
+  double *rbuf; /* T|psi> in real space */
+  fftw_complex *cbuf; /* psi in reciprocal space */
   double *k2[3]; /* |k|^2 components along each direction */
 } KineticWorkType;
 
@@ -41,48 +36,18 @@ static void *allocateArray(size_t bytes)
   return allocate(ARRAY_ALIGNMENT, bytes > 0 ? bytes : ARRAY_ALIGNMENT);
 }
 
-static int getNumThreads(void)
-{
-#ifdef _OPENMP
-  return omp_get_max_threads();
-#else
-  return 1;
-#endif
-}
-
-static int getThreadNum(void)
-{
-#ifdef _OPENMP
-  return omp_get_thread_num();
-#else
-  return 0;
-#endif
-}
-
 static double phaseStart(int phase)
 {
-#ifdef LIKWID_PERFMON
-#pragma omp parallel
-  {
-    LIKWID_MARKER_START(PHASE_NAMES[phase]);
-  }
-#else
   (void)phase;
-#endif
+  LIKWID_MARKER_START(PHASE_NAMES[phase]);
   return getTimeStamp();
 }
 
 static double phaseStop(int phase, double t0)
 {
   double t = getTimeStamp() - t0;
-#ifdef LIKWID_PERFMON
-#pragma omp parallel
-  {
-    LIKWID_MARKER_STOP(PHASE_NAMES[phase]);
-  }
-#else
   (void)phase;
-#endif
+  LIKWID_MARKER_STOP(PHASE_NAMES[phase]);
   return t;
 }
 
@@ -147,7 +112,6 @@ static void setupGrid(const PoscarFileType *pf, const ConfigType *cfg, GridType 
 static void placeOrbitals(
     ElectronStateType *es, const GridType *grid, const double *rat, double rgcut)
 {
-#pragma omp parallel for schedule(dynamic)
   for (int iorb = 0; iorb < es->norb; iorb++) {
     putGtoSymOrthoOrb(&rat[3 * es->iat[iorb]],
         es->gw[iorb],
@@ -164,18 +128,13 @@ static void kineticInit(KineticWorkType *kw, const GridType *grid, double *psi)
   const int *ng = grid->ng;
   size_t nk     = (size_t)(ng[0] / 2 + 1) * ng[1] * ng[2];
 
-  kw->nthreads  = getNumThreads();
-  kw->rbuf      = malloc(kw->nthreads * sizeof(double *));
-  kw->cbuf      = malloc(kw->nthreads * sizeof(fftw_complex *));
-  for (int t = 0; t < kw->nthreads; t++) {
-    kw->rbuf[t] = allocateArray(grid->ngtot * sizeof(double));
-    kw->cbuf[t] = allocateArray(nk * sizeof(fftw_complex));
-  }
+  kw->rbuf      = allocateArray(grid->ngtot * sizeof(double));
+  kw->cbuf      = allocateArray(nk * sizeof(fftw_complex));
 
   // x is stored contiguously, so it is the last (halved) dimension for FFTW
-  kw->planf = fftw_plan_dft_r2c_3d(ng[2], ng[1], ng[0], psi, kw->cbuf[0], FFTW_ESTIMATE);
+  kw->planf = fftw_plan_dft_r2c_3d(ng[2], ng[1], ng[0], psi, kw->cbuf, FFTW_ESTIMATE);
   kw->planb =
-      fftw_plan_dft_c2r_3d(ng[2], ng[1], ng[0], kw->cbuf[0], kw->rbuf[0], FFTW_ESTIMATE);
+      fftw_plan_dft_c2r_3d(ng[2], ng[1], ng[0], kw->cbuf, kw->rbuf, FFTW_ESTIMATE);
 
   for (int d = 0; d < 3; d++) {
     int n       = (d == 0) ? ng[0] / 2 + 1 : ng[d];
@@ -193,10 +152,6 @@ static void kineticFree(KineticWorkType *kw)
 {
   fftw_destroy_plan(kw->planf);
   fftw_destroy_plan(kw->planb);
-  for (int t = 0; t < kw->nthreads; t++) {
-    free(kw->rbuf[t]);
-    free(kw->cbuf[t]);
-  }
   free(kw->rbuf);
   free(kw->cbuf);
   for (int d = 0; d < 3; d++) {
@@ -212,34 +167,29 @@ static double kineticEnergy(
   int nkx       = ng[0] / 2 + 1;
   double scale  = 0.5 / (double)grid->ngtot; // 1/2 from T, 1/N from the c2r transform
   double ekin   = 0.0;
+  double *tpsi  = kw->rbuf;
+  fftw_complex *cpsi = kw->cbuf;
 
-#pragma omp parallel
-  {
-    double *tpsi       = kw->rbuf[getThreadNum()];
-    fftw_complex *cpsi = kw->cbuf[getThreadNum()];
-
-#pragma omp for schedule(dynamic) reduction(+ : ekin)
-    for (int iorb = 0; iorb < es->norb; iorb++) {
-      double *psi = es->psi + iorb * grid->ld;
-      fftw_execute_dft_r2c(kw->planf, psi, cpsi);
-      for (int iz = 0; iz < ng[2]; iz++) {
-        for (int iy = 0; iy < ng[1]; iy++) {
-          double k2yz     = kw->k2[2][iz] + kw->k2[1][iy];
-          fftw_complex *c = cpsi + ((size_t)iz * ng[1] + iy) * nkx;
-          for (int ix = 0; ix < nkx; ix++) {
-            double fac = scale * (k2yz + kw->k2[0][ix]);
-            c[ix][0] *= fac;
-            c[ix][1] *= fac;
-          }
+  for (int iorb = 0; iorb < es->norb; iorb++) {
+    double *psi = es->psi + iorb * grid->ld;
+    fftw_execute_dft_r2c(kw->planf, psi, cpsi);
+    for (int iz = 0; iz < ng[2]; iz++) {
+      for (int iy = 0; iy < ng[1]; iy++) {
+        double k2yz     = kw->k2[2][iz] + kw->k2[1][iy];
+        fftw_complex *c = cpsi + ((size_t)iz * ng[1] + iy) * nkx;
+        for (int ix = 0; ix < nkx; ix++) {
+          double fac = scale * (k2yz + kw->k2[0][ix]);
+          c[ix][0] *= fac;
+          c[ix][1] *= fac;
         }
       }
-      fftw_execute_dft_c2r(kw->planb, cpsi, tpsi);
-      double tt = 0.0;
-      for (size_t i = 0; i < grid->ngtot; i++) {
-        tt += psi[i] * tpsi[i];
-      }
-      ekin += tt * grid->voxel;
     }
+    fftw_execute_dft_c2r(kw->planb, cpsi, tpsi);
+    double tt = 0.0;
+    for (size_t i = 0; i < grid->ngtot; i++) {
+      tt += psi[i] * tpsi[i];
+    }
+    ekin += tt * grid->voxel;
   }
   return ekin;
 }
@@ -320,7 +270,6 @@ static void rotateOrbitals(
         0.0,
         wa,
         m);
-#pragma omp parallel for schedule(static)
     for (int iorb = 0; iorb < norb; iorb++) {
       memcpy(es->psi + iorb * grid->ld + r0, wa + (size_t)iorb * m, m * sizeof(double));
     }
@@ -369,7 +318,6 @@ static bool validateOrbitals(const ElectronStateType *es,
   double ekinAnalytical = 0.0;
   bool ok               = true;
 
-#pragma omp parallel for schedule(dynamic) reduction(max : res, amax, normErr)
   for (int iorb = 0; iorb < es->norb; iorb++) {
     const double *psi = es->psi + iorb * grid->ld;
     double tt         = testPutGtoSymOrthoOrb(
@@ -425,7 +373,7 @@ int runDft(const PoscarFileType *pf, const ConfigType *cfg)
   int norb       = es.norb;
   size_t nk      = (size_t)(grid.ng[0] / 2 + 1) * grid.ng[1] * grid.ng[2];
   double memPsi  = (double)grid.ld * norb * sizeof(double);
-  double memWork = (double)getNumThreads() * (grid.ngtot + 2 * nk) * sizeof(double) +
+  double memWork = (double)(grid.ngtot + 2 * nk) * sizeof(double) +
                    (3.0 * norb * norb + (double)ROTATE_BLOCK * norb) * sizeof(double);
 
   printf("Input         : %s (%d atoms)\n", cfg->poscarFile, pf->nat);

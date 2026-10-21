@@ -17,6 +17,9 @@ The grid spacing is fixed, so the number of grid points N grows linearly with th
 number of atoms. The cost of the overlap and rotation phases is therefore O(N_atoms³),
 as in production DFT codes.
 
+This is the sequential version of the benchmark: it runs on a single core and
+contains no threading.
+
 ## Getting Started
 
 To build and run **DFT-Bench**, you need a C compiler, GNU make, FFTW3, and a
@@ -39,7 +42,7 @@ BLAS/LAPACK and the FFTW3 interface.
 3. **Adjust configuration**
 
    The first `make` creates `config.mk` from `mk/config-default.mk`. Edit it to select
-   the tool chain, the BLAS backend, OpenMP, etc.
+   the tool chain, the BLAS backend, etc.
 
 4. **Build**
 
@@ -60,7 +63,6 @@ Configure the tool chain and additional options in `config.mk`:
 ```make
 # Supported: GCC, CLANG, ICX
 TOOLCHAIN ?= GCC
-ENABLE_OPENMP ?= false
 ENABLE_LIKWID ?= false
 
 # BLAS/LAPACK and FFT backend. Supported: MKL, OPENBLAS
@@ -71,19 +73,18 @@ FFTW_ROOT ?=
 
 #Feature options
 OPTIONS +=  -DARRAY_ALIGNMENT=64
-#OPTIONS +=  -DVERBOSE_AFFINITY
 #OPTIONS +=  -DVERBOSE_TIMER
 ```
 
 - `BLAS=MKL` requires `MKLROOT` to be set (e.g. by sourcing oneAPI `setvars.sh`) and
-  uses MKL's FFTW3 interface. The MKL threading layer matches the tool chain and
-  `ENABLE_OPENMP`.
+  uses MKL's FFTW3 interface and its sequential layer.
 - `BLAS=OPENBLAS` links `-lopenblas -lfftw3`. Any BLAS library that provides `cblas.h`
   and `lapacke.h` can be used this way, e.g. with a symlink or by adjusting
-  `mk/include_BLAS.mk`. Example for Homebrew on macOS:
+  `mk/include_BLAS.mk`. If the OpenBLAS library is multi-threaded, run with
+  `OPENBLAS_NUM_THREADS=1`. Example for Homebrew on macOS:
 
   ```sh
-  make TOOLCHAIN=CLANG BLAS=OPENBLAS ENABLE_OPENMP=true \
+  make TOOLCHAIN=CLANG BLAS=OPENBLAS \
        OPENBLAS_ROOT=/opt/homebrew/opt/openblas FFTW_ROOT=/opt/homebrew/opt/fftw
   ```
 
@@ -91,11 +92,10 @@ OPTIONS +=  -DARRAY_ALIGNMENT=64
   (`gto`, `overlap`, `eigen`, `rotate`, `kinetic`):
 
   ```sh
-  likwid-perfctr -C 0-71 -g FLOPS_DP -m ./dftbench-GCC -f poscars/POSCAR-0216-mp-149
+  likwid-perfctr -C 0 -g FLOPS_DP -m ./dftbench-GCC -f poscars/POSCAR-0216-mp-149
   ```
 
-- `-DVERBOSE_AFFINITY` prints the processor id and affinity mask of every thread,
-  `-DVERBOSE_TIMER` the timer resolution.
+- `-DVERBOSE_TIMER` prints the timer resolution.
 
 You can build multiple tool chains in the same directory, but notice that the
 Makefile is only acting on the one currently set. Intermediate build results are

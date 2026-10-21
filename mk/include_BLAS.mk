@@ -1,5 +1,6 @@
 # Selects the BLAS/LAPACK(E) and FFTW libraries, see BLAS in config.mk
-#   MKL      - Intel oneMKL, also provides the FFTW3 interface. Requires MKLROOT.
+#   MKL      - Intel oneMKL (sequential layer), also provides the FFTW3 interface.
+#              Requires MKLROOT.
 #   OPENBLAS - any library providing cblas.h/lapacke.h linked with -lopenblas,
 #              plus FFTW3. Set OPENBLAS_ROOT/FFTW_ROOT if not in default paths.
 
@@ -13,23 +14,10 @@ DEFINES  += -DUSE_MKL
 INCLUDES += -I$(MKLROOT)/include -I$(MKLROOT)/include/fftw
 
 ifeq ($(TOOLCHAIN),ICX)
-ifeq ($(ENABLE_OPENMP),true)
-LIBS     += -qmkl=parallel
-else
 LIBS     += -qmkl=sequential
-endif
 else
-ifeq ($(ENABLE_OPENMP),true)
-ifeq ($(TOOLCHAIN),GCC)
-MKL_THREAD_LIB = -lmkl_gnu_thread -lgomp
-else
-MKL_THREAD_LIB = -lmkl_intel_thread -liomp5
-endif
-else
-MKL_THREAD_LIB = -lmkl_sequential
-endif
 LIBS     += -L$(MKLROOT)/lib -Wl,-rpath,$(MKLROOT)/lib -Wl,--no-as-needed \
-            -lmkl_intel_lp64 $(MKL_THREAD_LIB) -lmkl_core -lpthread -lm -ldl
+            -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl
 endif
 
 else ifeq ($(strip $(BLAS)),OPENBLAS)

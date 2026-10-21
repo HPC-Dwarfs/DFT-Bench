@@ -9,11 +9,6 @@
 #include <string.h>
 #include <unistd.h>
 
-#ifdef _OPENMP
-#include "affinity.h"
-#include <omp.h>
-#endif
-
 #include "constants.h"
 #include "dft.h"
 #include "likwid-marker.h"
@@ -93,34 +88,16 @@ int main(int argc, char **argv)
   printf(HLINE);
   printf("DFT-Bench\n");
   printf(HLINE);
-#ifdef _OPENMP
-  printf("OpenMP enabled, running with %d threads\n", omp_get_max_threads());
-
-#ifdef VERBOSE_AFFINITY
-#pragma omp parallel
-  {
-    int i = omp_get_thread_num();
-#pragma omp critical
-    {
-      printf("Thread %d running on processor %d\n", i, affinity_getProcessorId());
-      affinity_getmask();
-    }
-  }
-#endif
-#endif
 #ifdef VERBOSE_TIMER
   printf("Timer resolution %.2e s\n", getTimeResolution());
 #endif
 
   LIKWID_MARKER_INIT;
-#pragma omp parallel
-  {
-    LIKWID_MARKER_REGISTER("gto");
-    LIKWID_MARKER_REGISTER("overlap");
-    LIKWID_MARKER_REGISTER("eigen");
-    LIKWID_MARKER_REGISTER("rotate");
-    LIKWID_MARKER_REGISTER("kinetic");
-  }
+  LIKWID_MARKER_REGISTER("gto");
+  LIKWID_MARKER_REGISTER("overlap");
+  LIKWID_MARKER_REGISTER("eigen");
+  LIKWID_MARKER_REGISTER("rotate");
+  LIKWID_MARKER_REGISTER("kinetic");
 
   fflush(stdout);
 

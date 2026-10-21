@@ -5,26 +5,37 @@
 #ifndef __RUN_DFT_H_
 #define __RUN_DFT_H_
 
+#include <stdbool.h>
+#include <stddef.h>
+
 #include "poscarReader.h"
 
-void test_put_gto_sym_ortho(double *rxyz,
-    double gw,
-    double *xyz111,
-    int ngx,
-    int ngy,
-    int ngz,
-    double *hgrid,
-    double *orb);
+typedef struct {
+  const char *poscarFile;
+  double spacing; /* target grid spacing in bohr, used if ng[0] == 0 */
+  int ng[3]; /* explicit grid size (0: derive from spacing) */
+  int reps; /* number of timed repetitions */
+  bool validate;
+  bool verbose;
+} ConfigType;
 
-void runDft(PoscarFileType *pf);
+typedef struct {
+  int ng[3]; /* grid points per direction, x runs fastest */
+  double h[3]; /* grid spacing in bohr */
+  double origin[3]; /* position of grid point (0,0,0) */
+  size_t ngtot; /* ng[0] * ng[1] * ng[2] */
+  size_t ld; /* leading dimension of the orbital block (ngtot padded) */
+  double voxel;
+} GridType;
 
 typedef struct {
   int norb;
-  int ngx;
-  int ngy;
-  int ngz;
-  double *gwall;
-  double **orbs;
-} electronState;
+  int *iat; /* atom each orbital is centered on */
+  double *gw; /* Gaussian width of each orbital in bohr */
+  double *psi; /* column-major ld x norb block, orbital i at psi + i * ld */
+} ElectronStateType;
+
+/* Runs the benchmark, returns EXIT_SUCCESS or EXIT_FAILURE (failed validation). */
+int runDft(const PoscarFileType *pf, const ConfigType *cfg);
 
 #endif // __RUN_DFT_H_

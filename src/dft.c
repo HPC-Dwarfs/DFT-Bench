@@ -3,442 +3,516 @@
  * Use of this source code is governed by a MIT style
  * license that can be found in the LICENSE file. */
 #include <fftw3.h>
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef _OPENMP
-#include <omp.h>
-#endif
-
+#include "allocate.h"
+#include "blasLapack.h"
 #include "constants.h"
 #include "dft.h"
 #include "gtoOnGrid.h"
-#include "mkl_cblas.h"
+#include "likwid-marker.h"
 #include "poscarReader.h"
+#include "timing.h"
+#include "util.h"
 
-extern void dsyev(char *jobz,
-    char *uplo,
-    int *n,
-    double *a,
-    int *lda,
-    double *w,
-    double *work,
-    int *lwork,
-    int *info);
-extern void dgemm(char *transa,
-    char *transb,
-    int *m,
-    int *n,
-    int *k,
-    double *alpha,
-    const double *a,
-    int *lda,
-    const double *b,
-    int *ldb,
-    double *beta,
-    double *c,
-    int *ldc);
+enum { PH_GTO, PH_OVERLAP, PH_EIGEN, PH_ROTATE, PH_KINETIC, NPHASES };
+static const char *const PHASE_NAMES[NPHASES] = {
+  "gto", "overlap", "eigen", "rotate", "kinetic"
+};
 
-void testPutGtoSymOrthoOrb(double *rxyz,
-    double gw,
-    double *xyz111,
-    int ngx,
-    int ngy,
-    int ngz,
-    double *hgrid,
-    const double *orb_i)
+typedef struct {
+  fftw_plan planf, planb;
+  double *rbuf; /* T|psi> in real space */
+  fftw_complex *cbuf; /* psi in reciprocal space */
+  double *k2[3]; /* |k|^2 components along each direction */
+} KineticWorkType;
+
+static void *allocateArray(size_t bytes)
 {
-  int ll;
-  double *waT, *wa, *orb;
-  double gwsqinv, fac, res;
-  double hx, hy, hz;
-  double *expx, *expy, *expz;
-  int negx, negy, negz;
-  negx    = 5 * ngx;
-  negy    = 5 * ngy;
-  negz    = 5 * ngz;
-  orb     = malloc(ngx * ngy * ngz * sizeof(double));
-  waT     = calloc(negx * negy * negz, sizeof(double));
+  return allocate(ARRAY_ALIGNMENT, bytes > 0 ? bytes : ARRAY_ALIGNMENT);
+}
 
-  wa      = (waT + negx * negy * ngz * 2 + negx * ngy * 2 + ngx * 2);
-  hx      = hgrid[0];
-  hy      = hgrid[4];
-  hz      = hgrid[8];
-  gwsqinv = 1.0 / (gw * gw);
-  fac     = 1.0 / pow(gw * sqrt(M_PI), 3);
-  fac *= sqrt(pow(gw * sqrt(2.0 * M_PI), 3));
-  printf("fac= %lf\n", fac);
-  printf("rxyz  %20.10lf  %20.10lf  %20.10lf\n", rxyz[0], rxyz[1], rxyz[2]);
+static double phaseStart(int phase)
+{
+  (void)phase;
+  LIKWID_MARKER_START(PHASE_NAMES[phase]);
+  return getTimeStamp();
+}
 
-  // Precompute 1D exponentials (separable Gaussian)
-  expx = malloc(negx * sizeof(double));
-  expy = malloc(negy * sizeof(double));
-  expz = malloc(negz * sizeof(double));
-  for (int ix = -2 * ngx; ix < 3 * ngx; ix++) {
-    double dx          = rxyz[0] - ix * hx - xyz111[0];
-    expx[ix + 2 * ngx] = exp(-dx * dx * gwsqinv);
-  }
-  for (int iy = -2 * ngy; iy < 3 * ngy; iy++) {
-    double dy          = rxyz[1] - iy * hy - xyz111[1];
-    expy[iy + 2 * ngy] = exp(-dy * dy * gwsqinv);
-  }
-  for (int iz = -2 * ngz; iz < 3 * ngz; iz++) {
-    double dz          = rxyz[2] - iz * hz - xyz111[2];
-    expz[iz + 2 * ngz] = exp(-dz * dz * gwsqinv);
-  }
+static double phaseStop(int phase, double t0)
+{
+  double t = getTimeStamp() - t0;
+  (void)phase;
+  LIKWID_MARKER_STOP(PHASE_NAMES[phase]);
+  return t;
+}
 
-#pragma omp parallel for schedule(static)
-  for (int iz = -2 * ngz; iz < 3 * ngz; iz++) {
-    double ez = fac * expz[iz + 2 * ngz];
-    int kkZ   = negx * negy * iz;
-    for (int iy = -2 * ngy; iy < 3 * ngy; iy++) {
-      double eyz = ez * expy[iy + 2 * ngy];
-      int kkYz   = kkZ + negx * iy;
-      for (int ix = -2 * ngx; ix < 3 * ngx; ix++) {
-        wa[kkYz + ix] = eyz * expx[ix + 2 * ngx];
+/* Smallest even n' >= n whose only prime factors are 2, 3 and 5 */
+static int fftGoodSize(int n)
+{
+  for (int m = MAX(n, 2);; m++) {
+    int r = m;
+    if (r % 2)
+      continue;
+    while (r % 2 == 0)
+      r /= 2;
+    while (r % 3 == 0)
+      r /= 3;
+    while (r % 5 == 0)
+      r /= 5;
+    if (r == 1)
+      return m;
+  }
+}
+
+static void setupGrid(const PoscarFileType *pf, const ConfigType *cfg, GridType *grid)
+{
+  for (int i = 0; i < 3; i++) {
+    for (int j = 0; j < 3; j++) {
+      if (i != j && fabs(pf->cell[i][j]) > 1.0E-10 * fabs(pf->cell[i][i])) {
+        fprintf(stderr, "ERROR: only orthogonal cells are supported\n");
+        exit(EXIT_FAILURE);
       }
+    }
+    if (pf->cell[i][i] <= 0.0) {
+      fprintf(stderr, "ERROR: cell vector %d must point in positive direction\n", i + 1);
+      exit(EXIT_FAILURE);
     }
   }
 
-  memset(orb, 0, ngx * ngy * ngz * sizeof(double));
+  grid->ngtot = 1;
+  for (int d = 0; d < 3; d++) {
+    double alat = pf->cell[d][d];
+    if (cfg->ng[0] > 0) {
+      grid->ng[d] = cfg->ng[d];
+    } else {
+      grid->ng[d] = fftGoodSize((int)ceil(alat / cfg->spacing));
+    }
+    grid->h[d]      = alat / grid->ng[d];
+    grid->origin[d] = 0.0;
+    grid->ngtot *= (size_t)grid->ng[d];
+  }
+  // pad the columns of the orbital block to keep every orbital aligned
+  size_t pad  = ARRAY_ALIGNMENT / sizeof(double);
+  grid->ld    = (grid->ngtot + pad - 1) / pad * pad;
+  grid->voxel = grid->h[0] * grid->h[1] * grid->h[2];
 
-  for (int icz = 0; icz < 5; icz++) {
-    for (int icy = 0; icy < 5; icy++) {
-      for (int icx = 0; icx < 5; icx++) {
-        for (int iz = 0; iz < ngz; iz++) {
-          int kkZ = ngx * ngy * iz;
-          int llZ = negx * negy * (icz * ngz + iz);
-          for (int iy = 0; iy < ngy; iy++) {
-            int kkYz = kkZ + ngx * iy;
-            ll       = llZ + negx * (icy * ngy + iy) + icx * ngx;
+  if (grid->ld > INT_MAX) {
+    fprintf(stderr,
+        "ERROR: %zu grid points exceed the 32 bit integer BLAS interface\n",
+        grid->ngtot);
+    exit(EXIT_FAILURE);
+  }
+}
 
-            for (int ix = 0; ix < ngx; ix++) {
-              orb[kkYz + ix] += waT[ll + ix];
-            }
-          }
+static void placeOrbitals(
+    ElectronStateType *es, const GridType *grid, const double *rat, double rgcut)
+{
+  for (int iorb = 0; iorb < es->norb; iorb++) {
+    putGtoSymOrthoOrb(&rat[3 * es->iat[iorb]],
+        es->gw[iorb],
+        rgcut,
+        grid->origin,
+        grid->ng,
+        grid->h,
+        es->psi + iorb * grid->ld);
+  }
+}
+
+static void kineticInit(KineticWorkType *kw, const GridType *grid, double *psi)
+{
+  const int *ng = grid->ng;
+  size_t nk     = (size_t)(ng[0] / 2 + 1) * ng[1] * ng[2];
+
+  kw->rbuf      = allocateArray(grid->ngtot * sizeof(double));
+  kw->cbuf      = allocateArray(nk * sizeof(fftw_complex));
+
+  // x is stored contiguously, so it is the last (halved) dimension for FFTW
+  kw->planf = fftw_plan_dft_r2c_3d(ng[2], ng[1], ng[0], psi, kw->cbuf, FFTW_ESTIMATE);
+  kw->planb =
+      fftw_plan_dft_c2r_3d(ng[2], ng[1], ng[0], kw->cbuf, kw->rbuf, FFTW_ESTIMATE);
+
+  for (int d = 0; d < 3; d++) {
+    int n       = (d == 0) ? ng[0] / 2 + 1 : ng[d];
+    double alat = ng[d] * grid->h[d];
+    kw->k2[d]   = malloc(n * sizeof(double));
+    for (int i = 0; i < n; i++) {
+      int m        = (i <= ng[d] / 2) ? i : i - ng[d];
+      double k     = 2.0 * M_PI * m / alat;
+      kw->k2[d][i] = k * k;
+    }
+  }
+}
+
+static void kineticFree(KineticWorkType *kw)
+{
+  fftw_destroy_plan(kw->planf);
+  fftw_destroy_plan(kw->planb);
+  free(kw->rbuf);
+  free(kw->cbuf);
+  for (int d = 0; d < 3; d++) {
+    free(kw->k2[d]);
+  }
+}
+
+/* <psi_i| -1/2 nabla^2 |psi_i> summed over all orbitals, using one FFT pair per orbital */
+static double kineticEnergy(
+    const KineticWorkType *kw, const ElectronStateType *es, const GridType *grid)
+{
+  const int *ng = grid->ng;
+  int nkx       = ng[0] / 2 + 1;
+  double scale  = 0.5 / (double)grid->ngtot; // 1/2 from T, 1/N from the c2r transform
+  double ekin   = 0.0;
+  double *tpsi  = kw->rbuf;
+  fftw_complex *cpsi = kw->cbuf;
+
+  for (int iorb = 0; iorb < es->norb; iorb++) {
+    double *psi = es->psi + iorb * grid->ld;
+    fftw_execute_dft_r2c(kw->planf, psi, cpsi);
+    for (int iz = 0; iz < ng[2]; iz++) {
+      for (int iy = 0; iy < ng[1]; iy++) {
+        double k2yz     = kw->k2[2][iz] + kw->k2[1][iy];
+        fftw_complex *c = cpsi + ((size_t)iz * ng[1] + iy) * nkx;
+        for (int ix = 0; ix < nkx; ix++) {
+          double fac = scale * (k2yz + kw->k2[0][ix]);
+          c[ix][0] *= fac;
+          c[ix][1] *= fac;
         }
       }
     }
-  }
-
-  res = 0.0;
-#pragma omp parallel for reduction(+ : res) schedule(static)
-  for (int i = 0; i < ngx * ngy * ngz; i++) {
-    double diff = orb[i] - orb_i[i];
-    res += diff * diff;
-  }
-
-  printf("res= %14.5E\n", sqrt(res));
-  free(expx);
-  free(expy);
-  free(expz);
-  free(waT);
-  free(orb);
-}
-double calKineticEnergyOrbSingle(int ngx,
-    int ngy,
-    int ngz,
-    double (*hgrid)[3],
-    const double *orb,
-    double *orbk,
-    double *kinorb,
-    fftw_plan *planf,
-    fftw_plan *planb)
-{
-  int igxt, igyt, igzt;
-  double akx, aky, akz, aknorm2, ekin;
-  fftw_execute(*planf);
-  for (int igz = 0; igz < ngz; igz++) {
-    for (int igy = 0; igy < ngy; igy++) {
-      for (int igx = 0; igx < ngx; igx++) {
-        igxt = igx;
-        igyt = igy;
-        igzt = igz;
-        if (igy > ngy / 2 - 1)
-          igyt = ngy - igy;
-        if (igz > ngz / 2 - 1)
-          igzt = ngz - igz;
-        akx     = 2.0 * M_PI * (igxt / 2) / ((double)ngx * hgrid[0][0]);
-        aky     = 2.0 * M_PI * (igyt) / ((double)ngy * hgrid[1][1]);
-        akz     = 2.0 * M_PI * (igzt) / ((double)ngz * hgrid[2][2]);
-        aknorm2 = akx * akx + aky * aky + akz * akz;
-        orbk[igz * (ngx + 2) * ngy + igy * (ngx + 2) + igx] *= 0.5 * aknorm2;
-      }
+    fftw_execute_dft_c2r(kw->planb, cpsi, tpsi);
+    double tt = 0.0;
+    for (size_t i = 0; i < grid->ngtot; i++) {
+      tt += psi[i] * tpsi[i];
     }
+    ekin += tt * grid->voxel;
   }
-  fftw_execute(*planb);
-  for (int i = 0; i < ngx * ngy * ngz; i++)
-    kinorb[i] *= 1.0 / (double)(ngx * ngy * ngz);
-  ekin = 0.0;
-  for (int i = 0; i < ngx * ngy * ngz; i++)
-    ekin += orb[i] * kinorb[i];
-  ekin *= (hgrid[0][0] * hgrid[1][1] * hgrid[2][2]);
   return ekin;
 }
-void getOverlap(electronState *es, double voxel, int ngtot, double *overlap)
+
+/* Upper triangle of S = voxel * Psi^T Psi (column-major, norb x norb) */
+static void computeOverlap(
+    const ElectronStateType *es, const GridType *grid, double *overlap)
 {
-  for (int iorb = 0; iorb < es->norb; iorb++) {
-    for (int jorb = 0; jorb <= iorb; jorb++) {
-      double ttdot;
-      ttdot = cblas_ddot(ngtot, es->orbs[iorb], 1, es->orbs[jorb], 1);
-      overlap[iorb * es->norb + jorb] = ttdot * voxel;
-    }
-  }
-  for (int iorb = 0; iorb < es->norb; iorb++) {
-    for (int jorb = 0; jorb <= iorb; jorb++) {
-      overlap[jorb * es->norb + iorb] = overlap[iorb * es->norb + jorb];
-    }
-  }
-}
-void orthogonalizeLoewdin(electronState *es, double voxel, int ngx, int ngy, int ngz)
-{
-  double *overlap;
-  overlap   = (double *)malloc(es->norb * es->norb * sizeof(double));
-  int ngtot = ngx * ngy * ngz;
-  getOverlap(es, voxel, ngtot, overlap);
-  for (int iorb = 0; iorb < es->norb; iorb++) {
-    for (int jorb = 0; jorb < es->norb; jorb++) {
-      printf("%6.2f", overlap[iorb * es->norb + jorb]);
-    }
-    printf("\n");
-  }
-  int info, nwa;
-  double *wa1, *wa2, *eval;
-  nwa       = es->norb * es->norb + 100;
-  wa1       = (double *)malloc(nwa * sizeof(double));
-  wa2       = (double *)malloc(nwa * sizeof(double));
-  eval      = (double *)malloc(es->norb * sizeof(double));
-  char jobz = 'V';
-  char uplo = 'U';
-  dsyev(&jobz, &uplo, &es->norb, overlap, &es->norb, eval, wa1, &nwa, &info);
-  //for (int iorb = 0; iorb < es->norb; iorb++) {
-  //  printf("evec %4d",iorb+1);
-  //  for (int jorb = 0; jorb < es->norb; jorb++) {
-  //    printf("%6.2f",overlap[iorb*es->norb+jorb]);
-  //  }
-  //  printf("\n");
-  //}
-  if (info != 0) {
-    printf("ERROR: info=%d in dsyev used for Loewdin orthogonalization", info);
-    exit(1);
-  }
-  for (int iorb = 0; iorb < es->norb; iorb++) {
-    printf("%5d%8.3f\n", iorb, eval[iorb]);
-  }
-  for (int i = 0; i < es->norb * es->norb; i++) {
-    wa1[i] = overlap[i];
-  }
-  for (int iorb = 0; iorb < es->norb; iorb++) {
-    for (int jorb = 0; jorb < es->norb; jorb++) {
-      overlap[iorb * es->norb + jorb] = wa1[jorb * es->norb + iorb];
-    }
-  }
-  for (int iorb = 0; iorb < es->norb; iorb++) {
-    for (int jorb = 0; jorb < es->norb; jorb++) {
-      wa1[iorb * es->norb + jorb] =
-          overlap[iorb * es->norb + jorb] * sqrt(1.0 / eval[jorb]);
-    }
-  }
-  char noTrans = 'N';
-  char doTrans = 'T';
-  double one   = 1.0;
-  double zero  = 0.0;
-  dgemm(&doTrans,
-      &noTrans,
-      &es->norb,
-      &es->norb,
-      &es->norb,
-      &one,
-      wa1,
-      &es->norb,
+  cblas_dsyrk(CblasColMajor,
+      CblasUpper,
+      CblasTrans,
+      es->norb,
+      (int)grid->ngtot,
+      grid->voxel,
+      es->psi,
+      (int)grid->ld,
+      0.0,
       overlap,
-      &es->norb,
-      &zero,
-      wa2,
-      &es->norb);
-  double *orbst1, *orbst2;
-  orbst1 = (double *)malloc((ngx * ngy * ngz * es->norb) * sizeof(double));
-  orbst2 = (double *)malloc((ngx * ngy * ngz * es->norb) * sizeof(double));
-  for (int iorb = 0; iorb < es->norb; iorb++) {
-    for (int i = 0; i < ngx * ngy * ngz; i++) {
-      orbst1[i * es->norb + iorb] = es->orbs[iorb][i];
+      es->norb);
+}
+
+/* Computes X = S^{-1/2} = U diag(eval^{-1/2}) U^T. The overlap is overwritten by U. */
+static void loewdinMatrix(int norb, double *overlap, double *eval, double *wa, double *x)
+{
+  lapack_int info = LAPACKE_dsyevd(LAPACK_COL_MAJOR, 'V', 'U', norb, overlap, norb, eval);
+  if (info != 0) {
+    fprintf(stderr,
+        "ERROR: info=%d in dsyevd used for Loewdin orthogonalization\n",
+        (int)info);
+    exit(EXIT_FAILURE);
+  }
+  if (eval[0] <= 0.0) {
+    fprintf(stderr,
+        "ERROR: overlap matrix is not positive definite (smallest eigenvalue %e)\n",
+        eval[0]);
+    exit(EXIT_FAILURE);
+  }
+  for (int j = 0; j < norb; j++) {
+    double fac = 1.0 / sqrt(eval[j]);
+    for (int i = 0; i < norb; i++) {
+      wa[i + (size_t)j * norb] = overlap[i + (size_t)j * norb] * fac;
     }
   }
-  dgemm(&doTrans,
-      &noTrans,
-      &es->norb,
-      &ngtot,
-      &es->norb,
-      &one,
-      wa2,
-      &es->norb,
-      orbst1,
-      &es->norb,
-      &zero,
-      orbst2,
-      &es->norb);
-  for (int iorb = 0; iorb < es->norb; iorb++) {
-    for (int i = 0; i < ngx * ngy * ngz; i++) {
-      es->orbs[iorb][i] = orbst2[i * es->norb + iorb];
+  cblas_dgemm(CblasColMajor,
+      CblasNoTrans,
+      CblasTrans,
+      norb,
+      norb,
+      norb,
+      1.0,
+      wa,
+      norb,
+      overlap,
+      norb,
+      0.0,
+      x,
+      norb);
+}
+
+/* Psi <- Psi * X, done in row blocks so that only a block-sized buffer is needed */
+static void rotateOrbitals(
+    ElectronStateType *es, const GridType *grid, const double *x, double *wa)
+{
+  int norb = es->norb;
+  for (size_t r0 = 0; r0 < grid->ngtot; r0 += ROTATE_BLOCK) {
+    int m = (int)MIN((size_t)ROTATE_BLOCK, grid->ngtot - r0);
+    cblas_dgemm(CblasColMajor,
+        CblasNoTrans,
+        CblasNoTrans,
+        m,
+        norb,
+        norb,
+        1.0,
+        es->psi + r0,
+        (int)grid->ld,
+        x,
+        norb,
+        0.0,
+        wa,
+        m);
+    for (int iorb = 0; iorb < norb; iorb++) {
+      memcpy(es->psi + iorb * grid->ld + r0, wa + (size_t)iorb * m, m * sizeof(double));
     }
   }
-  //for (int iorb = 0; iorb < es->norb; iorb++) {
-  //  printf("orbst2 %4d\n",iorb+1);
-  //  for (int i = 0; i < ngx * ngy * ngz; i++) {
-  //    printf("%15.5f\n",orbst2[i * es->norb + iorb]);
-  //  }
-  //}
-  printf("-----------------------------------------------------------------\n");
-  getOverlap(es, voxel, ngtot, overlap);
-  for (int iorb = 0; iorb < es->norb; iorb++) {
-    for (int jorb = 0; jorb < es->norb; jorb++) {
-      double tt;
-      tt = overlap[iorb * es->norb + jorb];
-      if (fabs(tt) < 1.E-12)
-        tt = 0.0;
-      printf("%6.2f", tt);
+}
+
+static double maxDeviationFromIdentity(int norb, const double *overlap)
+{
+  double dev = 0.0;
+  for (int j = 0; j < norb; j++) {
+    for (int i = 0; i <= j; i++) {
+      double tt = overlap[i + (size_t)j * norb] - (i == j ? 1.0 : 0.0);
+      dev       = fmax(dev, fabs(tt));
+    }
+  }
+  return dev;
+}
+
+static void printMatrix(const char *title, int norb, const double *overlap)
+{
+  printf("%s\n", title);
+  for (int i = 0; i < norb; i++) {
+    for (int j = 0; j < norb; j++) {
+      double tt =
+          (i <= j) ? overlap[i + (size_t)j * norb] : overlap[j + (size_t)i * norb];
+      printf("%6.2f", fabs(tt) < 1.E-12 ? 0.0 : tt);
     }
     printf("\n");
   }
-  free(orbst1);
-  free(orbst2);
-  free(overlap);
-  free(wa1);
-  free(wa2);
-  free(eval);
 }
-void runDft(PoscarFileType *pf)
+
+static bool checkValue(const char *label, double value, double tol)
 {
-  int ngx, ngy, ngz;
-  double xyz111[3];
-  double hgrid[3][3];
-  double **orbk, **kinorb;
-  double gw1, gw2, rgcut, anorm;
-  double ekin, ekinAnalytical;
-  double *rat     = *pf->rat_o;
-  char (*sat)[5]  = *pf->sat_o;
-  double (*cv)[3] = (double (*)[3])pf->cellvec;
-  electronState es;
-  fftw_plan *planf, *planb;
+  bool ok = value <= tol;
+  printf("%-38s %12.4e  (tol %.0e)  %s\n", label, value, tol, ok ? "PASS" : "FAIL");
+  return ok;
+}
 
-  gw1   = 1.11 / BOHR2ANG * 0.5;
-  gw2   = 1.11 / BOHR2ANG * 0.6;
-  rgcut = 6.0 * fmax(gw1, gw2);
-  ngx   = 32;
-  ngy   = 32;
-  ngz   = 32;
+/* Checks of the freshly placed (non-orthogonal) orbitals */
+static bool validateOrbitals(const ElectronStateType *es,
+    const GridType *grid,
+    const KineticWorkType *kw,
+    const double *rat)
+{
+  double res = 0.0, amax = 0.0, normErr = 0.0;
+  double ekinAnalytical = 0.0;
+  bool ok               = true;
 
-  for (int i = 0; i < 3; i++) {
-    for (int j = 0; j < 3; j++) {
-      hgrid[i][j] = 0.0;
+  for (int iorb = 0; iorb < es->norb; iorb++) {
+    const double *psi = es->psi + iorb * grid->ld;
+    double tt         = testPutGtoSymOrthoOrb(
+        &rat[3 * es->iat[iorb]], es->gw[iorb], grid->origin, grid->ng, grid->h, psi);
+    double anorm = 0.0;
+    double pmax  = 0.0;
+    for (size_t i = 0; i < grid->ngtot; i++) {
+      anorm += psi[i] * psi[i];
+      pmax = fmax(pmax, fabs(psi[i]));
+    }
+    res     = fmax(res, tt);
+    amax    = fmax(amax, pmax);
+    normErr = fmax(normErr, fabs(1.0 - anorm * grid->voxel));
+  }
+  for (int iorb = 0; iorb < es->norb; iorb++) {
+    // <T> = 3/(2 gw^2) for a normalized exp(-r^2/gw^2) orbital
+    ekinAnalytical += 1.5 / (es->gw[iorb] * es->gw[iorb]);
+  }
+  double ekin = kineticEnergy(kw, es, grid);
+
+  ok &= checkValue("GTO vs. reference (max rel. residual)", res / amax, TOL_GTO_RESIDUAL);
+  ok &= checkValue("GTO normalization (max |1-<psi|psi>|)", normErr, TOL_NORM);
+  printf("Ekin numerical %20.10f  analytical %20.10f\n", ekin, ekinAnalytical);
+  ok &= checkValue(
+      "Ekin (rel. error)", fabs(ekin - ekinAnalytical) / ekinAnalytical, TOL_EKIN);
+  return ok;
+}
+
+static void printMemory(const char *label, double bytes)
+{
+  if (bytes > 1024.0 * 1024.0 * 1024.0) {
+    printf("%-14s: %.2f GB\n", label, bytes / (1024.0 * 1024.0 * 1024.0));
+  } else {
+    printf("%-14s: %.2f MB\n", label, bytes / (1024.0 * 1024.0));
+  }
+}
+
+int runDft(const PoscarFileType *pf, const ConfigType *cfg)
+{
+  GridType grid;
+  ElectronStateType es;
+  KineticWorkType kw;
+  double gw1, gw2, rgcut;
+  bool pass = true;
+
+  gw1       = 1.11 / BOHR2ANG * 0.5;
+  gw2       = 1.11 / BOHR2ANG * 0.6;
+  rgcut     = 6.0 * fmax(gw1, gw2);
+
+  setupGrid(pf, cfg, &grid);
+
+  es.norb        = 2 * pf->nat;
+  int norb       = es.norb;
+  size_t nk      = (size_t)(grid.ng[0] / 2 + 1) * grid.ng[1] * grid.ng[2];
+  double memPsi  = (double)grid.ld * norb * sizeof(double);
+  double memWork = (double)(grid.ngtot + 2 * nk) * sizeof(double) +
+                   (3.0 * norb * norb + (double)ROTATE_BLOCK * norb) * sizeof(double);
+
+  printf("Input         : %s (%d atoms)\n", cfg->poscarFile, pf->nat);
+  printf("Cell (bohr)   : %10.5f %10.5f %10.5f\n",
+      pf->cell[0][0],
+      pf->cell[1][1],
+      pf->cell[2][2]);
+  printf("Grid          : %d x %d x %d = %zu points\n",
+      grid.ng[0],
+      grid.ng[1],
+      grid.ng[2],
+      grid.ngtot);
+  printf("hgrid (bohr)  : %10.5f %10.5f %10.5f\n", grid.h[0], grid.h[1], grid.h[2]);
+  printf("Orbitals      : %d\n", norb);
+  printMemory("Orbitals mem", memPsi);
+  printMemory("Work mem", memWork);
+  printf(HLINE);
+  fflush(stdout);
+
+  es.iat = malloc(norb * sizeof(int));
+  es.gw  = malloc(norb * sizeof(double));
+  es.psi = allocateArray((size_t)grid.ld * norb * sizeof(double));
+  for (int iorb = 0; iorb < norb; iorb++) {
+    es.iat[iorb] = iorb / 2;
+    es.gw[iorb]  = (iorb % 2 == 0) ? gw1 : gw2;
+  }
+
+  // plan before the orbitals are filled, planning may overwrite the arrays
+  kineticInit(&kw, &grid, es.psi);
+
+  double *overlap = allocateArray((size_t)norb * norb * sizeof(double));
+  double *xmat    = allocateArray((size_t)norb * norb * sizeof(double));
+  double *wa      = allocateArray(
+      (size_t)MAX((size_t)norb, (size_t)ROTATE_BLOCK) * norb * sizeof(double));
+  double *eval = allocateArray(norb * sizeof(double));
+
+  double tmin[NPHASES], tsum[NPHASES];
+  double ekin = 0.0;
+  for (int ph = 0; ph < NPHASES; ph++) {
+    tmin[ph] = 1.0E30;
+    tsum[ph] = 0.0;
+  }
+
+  for (int rep = 0; rep < cfg->reps; rep++) {
+    bool check = cfg->validate && rep == 0;
+    double t[NPHASES], t0;
+
+    t0 = phaseStart(PH_GTO);
+    placeOrbitals(&es, &grid, pf->rat, rgcut);
+    t[PH_GTO] = phaseStop(PH_GTO, t0);
+
+    if (check) {
+      printf("Validation\n");
+      pass &= validateOrbitals(&es, &grid, &kw, pf->rat);
+    }
+
+    t0 = phaseStart(PH_OVERLAP);
+    computeOverlap(&es, &grid, overlap);
+    t[PH_OVERLAP] = phaseStop(PH_OVERLAP, t0);
+
+    if (cfg->verbose && rep == 0 && norb <= 64) {
+      printMatrix("Overlap matrix:", norb, overlap);
+    }
+
+    t0 = phaseStart(PH_EIGEN);
+    loewdinMatrix(norb, overlap, eval, wa, xmat);
+    t[PH_EIGEN] = phaseStop(PH_EIGEN, t0);
+
+    t0          = phaseStart(PH_ROTATE);
+    rotateOrbitals(&es, &grid, xmat, wa);
+    t[PH_ROTATE]  = phaseStop(PH_ROTATE, t0);
+
+    t0            = phaseStart(PH_KINETIC);
+    ekin          = kineticEnergy(&kw, &es, &grid);
+    t[PH_KINETIC] = phaseStop(PH_KINETIC, t0);
+
+    if (check) {
+      computeOverlap(&es, &grid, overlap);
+      if (cfg->verbose && norb <= 64) {
+        printMatrix("Overlap matrix after orthogonalization:", norb, overlap);
+      }
+      pass &= checkValue("Orthonormality (max |S-I|)",
+          maxDeviationFromIdentity(norb, overlap),
+          TOL_ORTHO);
+      printf(HLINE);
+    }
+
+    for (int ph = 0; ph < NPHASES; ph++) {
+      tmin[ph] = fmin(tmin[ph], t[ph]);
+      tsum[ph] += t[ph];
     }
   }
 
-  hgrid[0][0] = cv[0][0] / ngx;
-  hgrid[1][1] = cv[1][1] / ngy;
-  hgrid[2][2] = cv[2][2] / ngz;
-  printf("hgrid= %10.5f %10.5f %10.5f\n", hgrid[0][0], hgrid[1][1], hgrid[2][2]);
-
-  xyz111[0] = 0.0;
-  xyz111[1] = 0.0;
-  xyz111[2] = 0.0;
-
-  es.norb   = 2 * (*pf->nat_o);
-  planf     = (fftw_plan *)malloc(es.norb * sizeof(fftw_plan));
-  planb     = (fftw_plan *)malloc(es.norb * sizeof(fftw_plan));
-  es.gwall  = (double *)malloc(es.norb * sizeof(double));
-  es.orbs   = (double **)malloc(es.norb * sizeof(double *));
-  for (int iorb = 0; iorb < es.norb; iorb++) {
-    es.orbs[iorb] = malloc(ngx * ngy * ngz * sizeof(double));
+  printf("Overlap eigenvalues: min %12.6e  max %12.6e\n", eval[0], eval[norb - 1]);
+  if (cfg->verbose) {
+    for (int iorb = 0; iorb < norb; iorb++) {
+      printf("%5d%14.6e\n", iorb, eval[iorb]);
+    }
   }
-  for (int iorb = 0; iorb < es.norb; iorb++) {
-    if (iorb % 2 == 0) {
-      es.gwall[iorb] = gw1;
+  printf("Ekin (orthonormalized orbitals) = %20.10f\n", ekin);
+  printf(HLINE);
+
+  // nominal flop counts per repetition (FFT: 2.5 N log2 N per real transform)
+  double n              = (double)grid.ngtot;
+  double flops[NPHASES] = { 0.0 };
+  flops[PH_OVERLAP]     = (double)norb * (norb + 1) * n;
+  flops[PH_ROTATE]      = 2.0 * n * norb * norb;
+  flops[PH_KINETIC]     = norb * (5.0 * n * log2(n) + 4.0 * n);
+
+  double ttmin = 0.0, ttavg = 0.0;
+  printf("%-10s %14s %14s %14s\n", "Phase", "min time [s]", "avg time [s]", "GFLOP/s");
+  for (int ph = 0; ph < NPHASES; ph++) {
+    double tavg = tsum[ph] / cfg->reps;
+    ttmin += tmin[ph];
+    ttavg += tavg;
+    if (flops[ph] > 0.0) {
+      printf("%-10s %14.6f %14.6f %14.2f\n",
+          PHASE_NAMES[ph],
+          tmin[ph],
+          tavg,
+          flops[ph] / tmin[ph] * 1.0E-9);
     } else {
-      es.gwall[iorb] = gw2;
+      printf("%-10s %14.6f %14.6f %14s\n", PHASE_NAMES[ph], tmin[ph], tavg, "-");
     }
   }
-
-  orbk = (double **)malloc(es.norb * sizeof(double *));
-  for (int iorb = 0; iorb < es.norb; iorb++) {
-    orbk[iorb] = malloc((ngx + 2) * ngy * ngz * sizeof(double));
-  }
-  kinorb = (double **)malloc(es.norb * sizeof(double *));
-  for (int iorb = 0; iorb < es.norb; iorb++) {
-    kinorb[iorb] = malloc(ngx * ngy * ngz * sizeof(double));
+  printf("%-10s %14.6f %14.6f\n", "total", ttmin, ttavg);
+  printf(HLINE);
+  if (cfg->validate) {
+    printf("Validation %s\n", pass ? "PASSED" : "FAILED");
   }
 
-  putGtoSymOrthoOrb(
-      &rat[3 * 3], es.gwall[0], rgcut, xyz111, ngx, ngy, ngz, &hgrid[0][0], es.orbs[0]);
-  anorm = 0.0;
-  for (int i = 0; i < ngx * ngy * ngz; i++)
-    anorm += es.orbs[0][i] * es.orbs[0][i];
-  anorm = sqrt(anorm * hgrid[0][0] * hgrid[1][1] * hgrid[2][2]);
-  printf("anorm= %20.10f\n", anorm);
-  testPutGtoSymOrthoOrb(
-      &rat[3 * 3], es.gwall[0], xyz111, ngx, ngy, ngz, &hgrid[0][0], es.orbs[0]);
+  kineticFree(&kw);
+  free(overlap);
+  free(xmat);
+  free(wa);
+  free(eval);
+  free(es.iat);
+  free(es.gw);
+  free(es.psi);
 
-  for (int iorb = 0; iorb < es.norb; iorb++) {
-    putGtoSymOrthoOrb(&rat[(iorb / 2)*3],
-        es.gwall[iorb],
-        rgcut,
-        xyz111,
-        ngx,
-        ngy,
-        ngz,
-        &hgrid[0][0],
-        es.orbs[iorb]);
-  }
-  for (int iorb = 0; iorb < es.norb; iorb++) {
-    planf[iorb] = fftw_plan_dft_r2c_3d(
-        ngx, ngy, ngz, es.orbs[iorb], (fftw_complex *)orbk[iorb], FFTW_ESTIMATE);
-    planb[iorb] = fftw_plan_dft_c2r_3d(
-        ngx, ngy, ngz, (fftw_complex *)orbk[iorb], kinorb[iorb], FFTW_ESTIMATE);
-  }
-
-  ekinAnalytical = 0.0;
-  ekin           = 0.0;
-  for (int iorb = 0; iorb < es.norb; iorb++) {
-    double ekinSingle;
-    ekinSingle = calKineticEnergyOrbSingle(ngx,
-        ngy,
-        ngz,
-        hgrid,
-        es.orbs[iorb],
-        orbk[iorb],
-        kinorb[iorb],
-        &planf[iorb],
-        &planb[iorb]);
-    ekin += ekinSingle;
-    ekinAnalytical += 3.0 / (4.0 * pow(es.gwall[iorb], 5) * M_PI * sqrt(2.0 * M_PI)) *
-                      (pow(es.gwall[iorb] * sqrt(2.0 * M_PI), 3));
-  }
-  printf("nat= %d\n", *pf->nat_o);
-  printf("ekin= %20.10f  %20.10f  %14.5E\n", ekin, ekinAnalytical, ekin - ekinAnalytical);
-
-  double voxel = hgrid[0][0] * hgrid[1][1] * hgrid[2][2];
-  orthogonalizeLoewdin(&es, voxel, ngx, ngy, ngz);
-
-  for (int iorb = 0; iorb < es.norb; iorb++) {
-    fftw_destroy_plan(planf[iorb]);
-    fftw_destroy_plan(planb[iorb]);
-  }
-
-  free(es.gwall);
-  for (int iorb = 0; iorb < es.norb; iorb++) {
-    free(es.orbs[iorb]);
-  }
-  free(es.orbs);
-  for (int iorb = 0; iorb < es.norb; iorb++) {
-    free(orbk[iorb]);
-  }
-  free(orbk);
-  for (int iorb = 0; iorb < es.norb; iorb++) {
-    free(kinorb[iorb]);
-  }
-  free(kinorb);
-  free(planf);
-  free(planb);
+  return pass ? EXIT_SUCCESS : EXIT_FAILURE;
 }

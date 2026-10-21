@@ -1,18 +1,10 @@
 CC   = clang
 LD = $(CC)
 
-ifeq ($(ENABLE_OPENMP),true)
-OPENMP   = -fopenmp
-# Uncomment for homebrew libomp on MacOS
-# OPENMP   = -Xpreprocessor -fopenmp
-# LIBS     = -L/opt/homebrew/opt/libomp/lib -lomp
-endif
-
 VERSION  = --version
-CFLAGS   = -O3 -ffast-math -std=c99 $(OPENMP)
-#CFLAGS   = -Ofast -fnt-store=aggressive  -std=c99 $(OPENMP) #AMD CLANG
-LFLAGS   = $(OPENMP)
+CFLAGS   = -O3 -ffast-math -std=c99
+#CFLAGS   = -Ofast -fnt-store=aggressive  -std=c99 #AMD CLANG
+LFLAGS   =
 DEFINES  = -D_GNU_SOURCE
 INCLUDES =
-# Uncomment for homebrew libomp on MacOS
-# INCLUDES = -I/opt/homebrew/opt/libomp/include
+LIBS     =

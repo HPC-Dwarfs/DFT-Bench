@@ -6,12 +6,14 @@
 #define __POSCARREADER_H_
 
 typedef struct {
-  int *nat_o;
-  double **rat_o;
-  char (**sat_o)[5];
-  double *cellvec;
+  int nat; /* number of atoms */
+  double *rat; /* Cartesian atom positions in bohr, 3*nat */
+  char (*sat)[5]; /* element symbol of each atom */
+  double cell[3][3]; /* cell vectors (rows) in bohr */
 } PoscarFileType;
 
-void readPoscarFile(char *filename, PoscarFileType *pf);
+/* Reads a VASP5 POSCAR file. Terminates the program on any error. */
+void readPoscarFile(const char *filename, PoscarFileType *pf);
+void freePoscarFile(PoscarFileType *pf);
 
 #endif

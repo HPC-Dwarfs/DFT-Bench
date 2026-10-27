@@ -20,6 +20,8 @@ MKL_BLACS ?= openmpi
 # Installation prefixes of ScaLAPACK (for BLAS=OPENBLAS) and ELPA (leave empty for system paths)
 SCALAPACK_ROOT ?=
 ELPA_ROOT ?=
+# ELPA library name (default: elpa_openmp for an OpenMP build of ELPA, otherwise elpa)
+#ELPA_LIB ?= elpa
 
 #Feature options
 OPTIONS +=  -DARRAY_ALIGNMENT=64

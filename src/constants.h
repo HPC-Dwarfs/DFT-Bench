@@ -20,12 +20,18 @@
 #define ROTATE_BLOCK 4096
 
 /* Edge length of the tiles of S that one rank computes in the overlap phase */
-#define OVERLAP_TILE 512
+#ifndef OVERLAP_TILE
+#define OVERLAP_TILE 128
+#endif
 
 /* Distributed eigensolvers: block size of the block-cyclic distribution, and the
  * default process grid holds about EIGEN_BLOCK_TARGET^2 elements per grid rank */
-#define EIGEN_NB 64
-#define EIGEN_BLOCK_TARGET 512
+#ifndef EIGEN_NB
+#define EIGEN_NB 32
+#endif
+#ifndef EIGEN_BLOCK_TARGET
+#define EIGEN_BLOCK_TARGET 160
+#endif
 /* Largest matrix that is checked against the LAPACK reference with -c */
 #define EIGEN_REFERENCE_MAX 4096
 

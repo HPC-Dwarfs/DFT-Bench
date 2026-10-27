@@ -160,6 +160,18 @@ void eigenInit(EigenType *eig, const CommType *comm, const ConfigType *cfg, int 
   }
   int npr = eig->grid[0], npc = eig->grid[1];
   int ngrid = npr * npc;
+#ifdef EIGEN_ELPA
+  // ELPA fails if a grid row or column owns no block of the matrix
+  if ((norb + nb - 1) / nb < MAX(npr, npc)) {
+    dftAbort("ERROR: ELPA needs at least one %d x %d block per grid row and column, "
+             "the eigen grid %d x %d is too large for %d orbitals\n",
+        nb,
+        nb,
+        npr,
+        npc,
+        norb);
+  }
+#endif
 
   // grid ranks: packed takes whole groups in group order, spread takes group rank 0
   // of every group, then group rank 1, ... World rank 0 is always the first one.

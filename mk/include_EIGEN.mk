@@ -40,10 +40,14 @@ else
 DEFINES  += -DEIGEN_SCALAPACK -DEIGEN_ELPA
 EIGEN_SRC = eigenLapack.c eigenScalapack.c eigenElpa.c
 ifneq ($(strip $(ELPA_ROOT)),)
-INCLUDES += $(addprefix -I,$(wildcard $(ELPA_ROOT)/include/elpa*))
-ELPA_LIBS = -L$(ELPA_ROOT)/lib -Wl,-rpath,$(ELPA_ROOT)/lib -lelpa
+ELPA_INC  = $(firstword $(wildcard $(ELPA_ROOT)/include/elpa*))
+INCLUDES += $(addprefix -I,$(ELPA_INC))
+# An OpenMP build of ELPA installs include/elpa_openmp-<version> and libelpa_openmp
+ELPA_LIB ?= $(if $(findstring elpa_openmp,$(ELPA_INC)),elpa_openmp,elpa)
+ELPA_LIBS = -L$(ELPA_ROOT)/lib -Wl,-rpath,$(ELPA_ROOT)/lib -l$(ELPA_LIB)
 else
-ELPA_LIBS = -lelpa
+ELPA_LIB ?= elpa
+ELPA_LIBS = -l$(ELPA_LIB)
 endif
 LIBS     := $(ELPA_LIBS) $(SCALAPACK_LIBS) $(LIBS)
 endif

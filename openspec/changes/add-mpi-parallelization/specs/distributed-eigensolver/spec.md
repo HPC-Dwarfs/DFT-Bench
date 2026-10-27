@@ -33,7 +33,7 @@ identical X.
 With a distributed backend, the eigen phase SHALL run on a 2D process grid that is a
 subset of all ranks. The option `-e <pr>x<pc>` SHALL set the grid. Without `-e`, the
 grid SHALL be square and sized so that each grid rank holds a local block of about
-512 x 512 matrix elements, limited by the number of ranks. The grid SHALL be printed in
+160 x 160 matrix elements, limited by the number of ranks. The grid SHALL be printed in
 the header. Ranks outside the grid SHALL wait for the result.
 
 #### Scenario: Explicit grid

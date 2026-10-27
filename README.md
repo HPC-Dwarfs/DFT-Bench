@@ -187,7 +187,8 @@ ELPA_ROOT ?=
     ScaLAPACK and the BLACS layer `MKL_BLACS`, which must match the MPI library.
     Otherwise `-lscalapack` is linked from `SCALAPACK_ROOT`.
   - `ELPA`: the ELPA 2-stage solver on the same grid, linked from `ELPA_ROOT` in
-    addition to ScaLAPACK.
+    addition to ScaLAPACK. An OpenMP build of ELPA (`include/elpa_openmp-*`) is
+    linked as `-lelpa_openmp`; `ELPA_LIB` overrides the library name.
 
 Examples (command line variables override `config.mk`), the second one for Homebrew
 on macOS, whose ScaLAPACK is built with Homebrew's Open MPI:
@@ -196,6 +197,14 @@ on macOS, whose ScaLAPACK is built with Homebrew's Open MPI:
 make TOOLCHAIN=CLANG BLAS=OPENBLAS ENABLE_MPI=true
 make TOOLCHAIN=CLANG BLAS=OPENBLAS ENABLE_MPI=true EIGEN_SOLVER=SCALAPACK \
      MPICC=/opt/homebrew/bin/mpicc SCALAPACK_ROOT=/opt/homebrew/opt/scalapack
+```
+
+On an Intel MPI system with oneAPI and an ELPA module that sets `ELPA_ROOT`, e.g. Fritz
+at NHR@FAU:
+
+```sh
+module load intel mkl intelmpi elpa
+make TOOLCHAIN=ICX BLAS=MKL ENABLE_MPI=true EIGEN_SOLVER=ELPA MKL_BLACS=intelmpi
 ```
 
 The ScaLAPACK library must be built for the same MPI library as `MPICC`, and the
@@ -210,7 +219,7 @@ The MPI build accepts the options of the sequential build and additionally:
 MPI options:
   -s <n>        at most n ranks per shared-memory group (default: node)
   -m <GB>       memory budget per group (default: 80% of node memory)
-  -e <pr>x<pc>  eigensolver process grid (default: about 512^2 elements per rank)
+  -e <pr>x<pc>  eigensolver process grid (default: about 160^2 elements per rank)
   -p <mode>     eigensolver rank placement: packed or spread (default: packed)
 ```
 
@@ -258,11 +267,13 @@ group alone exceed the budget.
 ### Eigensolver grid
 
 With `SCALAPACK` or `ELPA` the eigen phase runs on a `pr x pc` subset of the ranks.
-By default the grid is square, with about 512 x 512 matrix elements per grid rank and
-at most all ranks, e.g. 2 x 2 for 1024 orbitals on 4 or more ranks. `-e pr x pc` sets
+By default the grid is square, with about 160 x 160 matrix elements per grid rank and
+at most all ranks, e.g. 6 x 6 for 1024 orbitals on 36 or more ranks. `-e pr x pc` sets
 it, `-p packed` takes the grid ranks from as few groups as possible and `-p spread`
 round-robin from all groups. The other ranks wait for the result. With `LAPACK`, `-e`
-and `-p` have no effect.
+and `-p` have no effect. ELPA needs at least one `EIGEN_NB` x `EIGEN_NB` block (32 x 32)
+per grid row and column, so with `ELPA` a grid with 8 rows or columns needs at least
+225 orbitals; the program stops with an error for a grid that is too large.
 
 ```sh
 mpirun -np 8 ./dftbench-CLANG-MPI -f poscars/POSCAR-0064-mp-149 -c -e 2x3
@@ -304,8 +315,9 @@ likwid-mpirun -np 4 -g FLOPS_DP -m ./dftbench-GCC-MPI -f poscars/POSCAR-0216-mp-
 
 - `gto` and `kinetic` distribute whole orbitals. Ranks beyond the number of orbitals
   idle in these phases; the program prints how many.
-- `overlap` distributes tiles of 512 x 512 elements of S over the ranks of a group.
-  Inputs with fewer orbitals than 512 compute the overlap on one rank per group.
+- `overlap` distributes tiles of 128 x 128 elements of S over the ranks of a group,
+  n/128 (n/128 + 1) / 2 tiles for n orbitals. Ranks beyond the number of tiles idle
+  in this phase, e.g. 92 of 128 ranks for 1024 orbitals.
 - The eigen phase is a dense eigensolve of n x n with n orbitals. With `LAPACK` it
   runs on one rank, with `SCALAPACK` or `ELPA` on the eigen grid. It is the phase
   that stops scaling first, which is intended: real DFT codes face the same limit.

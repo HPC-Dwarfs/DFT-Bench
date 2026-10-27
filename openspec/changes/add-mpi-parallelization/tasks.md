@@ -32,7 +32,7 @@
 
 - [x] 5.1 Extend the phases to the nine MPI phases, with a barrier in `phaseStart`, accumulated timing in streamed mode, and a per-repetition MAX reduction. Keep the original five phases in the sequential build. Verify: the MPI table lists nine phases plus `total`, single-group runs show zero transpose times, and sequential output matches 1.1 in structure.
 - [x] 5.2 Report GFLOP/s from global flop counts for `overlap`, `rotate` and `kinetic`, and GB/s from the inter-group byte counters for the communication phases. Verify: the `overlap` GFLOP/s equals n(n+1)·N / min time for a 4-rank run, and the communication phases show non-zero GB/s with `-s 2`.
-- [ ] 5.3 Register LIKWID marker regions for all printed phases. Verify: `make ENABLE_MPI=true ENABLE_LIKWID=true` compiles on a system with LIKWID, and `likwid-mpirun -m` lists the nine regions per rank.
+- [x] 5.3 Register LIKWID marker regions for all printed phases. Verify: `make ENABLE_MPI=true ENABLE_LIKWID=true` compiles on a system with LIKWID, and `likwid-mpirun -m` lists the nine regions per rank.
 - [x] 5.4 Check error termination under MPI. Verify: `mpirun -np 4 dftbench-CLANG-MPI -f does-not-exist` exits non-zero without hanging, and the same holds for an invalid `-e` grid.
 
 ## 6. ScaLAPACK backend
@@ -44,11 +44,11 @@
 
 ## 7. ELPA backend
 
-- [ ] 7.1 Implement `eigenElpa.c` (ELPA setup with the ScaLAPACK descriptors, 2-stage solver, the rest shared with 6.3) and the `ELPA_ROOT` build flags. Verify: on a system with ELPA, POSCAR-0064 `-c` passes on 4 and 8 ranks, including the reference check.
+- [x] 7.1 Implement `eigenElpa.c` (ELPA setup with the ScaLAPACK descriptors, 2-stage solver, the rest shared with 6.3) and the `ELPA_ROOT` build flags. Verify: on a system with ELPA, POSCAR-0064 `-c` passes on 4 and 8 ranks, including the reference check.
 
 ## 8. Calibration
 
-- [ ] 8.1 On a cluster node, time the eigen phase for the LAPACK, SCALAPACK and ELPA backends at norb 1024 and 3456 for several grid sizes. Use the results to set the defaults of `OVERLAP_TILE`, `EIGEN_NB` and the grid heuristic constant, and record them in design.md. Verify: the table of measurements is in design.md, and the defaults in `constants.h` match it.
+- [x] 8.1 On a cluster node, time the eigen phase for the LAPACK, SCALAPACK and ELPA backends at norb 1024 and 3456 for several grid sizes. Use the results to set the defaults of `OVERLAP_TILE`, `EIGEN_NB` and the grid heuristic constant, and record them in design.md. Verify: the table of measurements is in design.md, and the defaults in `constants.h` match it.
 
 ## 9. Documentation and final verification
 

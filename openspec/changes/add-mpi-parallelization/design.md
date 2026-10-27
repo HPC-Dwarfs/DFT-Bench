@@ -167,7 +167,7 @@ alone exceeds the budget.
 ### D6. Overlap as tiles within a group, reduced per lane
 
 ```
-  group-shared transposed Psi ----> upper-triangle tiles of S (OVERLAP_TILE, e.g. 512)
+  group-shared transposed Psi ----> upper-triangle tiles of S (OVERLAP_TILE = 128, see D11a)
                                     assigned round-robin to the group's ranks
                                     diagonal tile: dsyrk, off-diagonal: dgemm,
                                     over all rows of the group (lda = ldt_g)
@@ -201,12 +201,12 @@ Only the selected file is compiled.
   group's window, then a group barrier follows. The sequential build uses the same
   file with no broadcast. All ranks get a bitwise-identical X.
 - **SCALAPACK:**
-  - Grid: square by default, q = clamp(floor(norb / 512), 1, floor(sqrt(P))), so each
-    rank holds a local block of about 512 x 512. `-e pr x pc` overrides it.
+  - Grid: square by default, q = clamp(floor(norb / 160), 1, floor(sqrt(P))), so each
+    rank holds a local block of about 160 x 160 (calibrated, see D11a). `-e pr x pc` overrides it.
     Placement follows `-p` (packed: the first pr·pc ranks in world order; spread:
     round-robin over groups). A BLACS context is built from the selected ranks
     with `blacs_gridmap`.
-  - Input: grid ranks copy their block-cyclic blocks (block size `EIGEN_NB`, e.g. 64)
+  - Input: grid ranks copy their block-cyclic blocks (block size `EIGEN_NB` = 32, see D11a)
     straight from the group-shared S. No communication is needed, because every
     group holds the full S after D6.
   - Solve: `pdsyevd` gives U and the eigenvalues. Each rank scales its local columns
@@ -220,6 +220,12 @@ Only the selected file is compiled.
   done by `elpa_eigenvectors` (2-stage solver by default) instead of `pdsyevd`.
   ELPA uses the ScaLAPACK descriptors, so it shares all the code except the solver
   call.
+  Found during implementation: ELPA fails (`elpa_setup` "blacsgrid is not ok", or
+  `elpa_eigenvectors` error -13) when a grid row or column owns no block, which
+  ScaLAPACK tolerates. The ELPA build therefore rejects a grid with
+  max(pr, pc) > ceil(norb / EIGEN_NB) at startup; the default grid never hits it.
+  OpenMP builds of ELPA (the only ones on Fritz) warn below
+  `MPI_THREAD_SERIALIZED`, so the ELPA build initializes MPI with that level.
 - **Reference check (`-c`, norb ≤ 4096):** global rank 0 copies S before the solve,
   runs the LAPACK path outside the timers, and compares the eigenvalues and X.
 - *Alternatives considered:* Newton–Schulz iteration (all `dgemm`, no dependency,
@@ -272,7 +278,8 @@ Only the selected file is compiled.
     `-lmkl_blacs_$(MKL_BLACS)_lp64`, where `MKL_BLACS ?= openmpi` (alternative
     `intelmpi`).
   - `SCALAPACK` otherwise links `-L$(SCALAPACK_ROOT)/lib -lscalapack`.
-  - `ELPA` adds `ELPA_ROOT` includes and `-lelpa` on top of the ScaLAPACK flags.
+  - `ELPA` adds `ELPA_ROOT` includes and `-lelpa` on top of the ScaLAPACK flags
+    (`-lelpa_openmp` for an OpenMP build of ELPA, `ELPA_LIB` overrides it).
   - Any distributed backend without `ENABLE_MPI=true` stops with `$(error ...)`.
 - **The eigen source files** are selected with `EIGEN_SRC` in `include_EIGEN.mk`. The
   Makefile's `wildcard` source list excludes the backends that are not chosen.
@@ -291,6 +298,63 @@ Each check is computed locally and combined:
 - **Pass flag:** combined with a logical AND reduction.
 
 The tolerances in `constants.h` stay as they are.
+
+### D11a. Calibration of the defaults (task 8.1)
+
+Measured on one Fritz node (NHR@FAU, 2 x Xeon Platinum 8360Y, 72 cores, 4 NUMA
+domains, 256 GB), ICX 2025.2, MKL 2024.2.2, Intel MPI 2021.16, ELPA 2025.01.001
+(OpenMP build, 1 thread), job 4381241. Always 72 ranks in one group, packed placement,
+minimum of 3 repetitions. The eigen runs use `-g 1.0`: the eigen phase depends only
+on norb, and POSCAR-1728 does not fit the node at the default spacing. Times of about
+0.1 s vary by up to 30 % between runs (the 1024 default grid, 2 x 2, gave 0.096 s and
+0.130 s in two runs).
+
+Eigen phase [s] over the grid, `EIGEN_NB` = 64:
+
+| grid      | 1024 SCALAPACK | 1024 ELPA | 3456 SCALAPACK | 3456 ELPA |
+| --------- | -------------: | --------: | -------------: | --------: |
+| LAPACK    |          0.184 |     0.184 |           7.37 |      7.37 |
+| 1 x 1     |          0.256 |     0.282 |           8.27 |      7.59 |
+| 2 x 2     |          0.130 |     0.325 |           2.60 |     11.07 |
+| 3 x 3     |          0.092 |     0.128 |           1.73 |      3.00 |
+| 4 x 4     |          0.078 |     0.060 |           1.21 |      1.07 |
+| 6 x 6     |          0.056 |     0.048 |           0.59 |      0.58 |
+| 8 x 8     |          0.092 |     0.041 |           0.45 |      0.42 |
+| 6 x 12    |          0.075 |     0.043 |           0.51 |      0.39 |
+
+- Both backends get faster up to 36 to 72 grid ranks at both sizes, so the old target
+  of 512 x 512 per rank (2 x 2 at 1024, 6 x 6 at 3456) was too coarse. ELPA on 2 x 2 is
+  slower than on one rank. A target of 160 x 160 selects 6 x 6 at 1024 and the cap
+  8 x 8 at 3456, within 20 % of the best grid for both backends:
+  **`EIGEN_BLOCK_TARGET` = 160**.
+- Gather (`pdgemr2d` to rank 0 plus broadcast) costs 0.005 to 0.01 s at 1024 and 0.08 s
+  at 3456, small against the solve.
+
+Eigen phase [s] over the block size:
+
+| nb  | 1024 SCA 4x4 | 1024 SCA 8x8 | 1024 ELPA 4x4 | 1024 ELPA 8x8 | 3456 SCA 4x4 | 3456 SCA 8x8 | 3456 ELPA 4x4 | 3456 ELPA 8x8 |
+| --: | -----------: | -----------: | ------------: | ------------: | -----------: | -----------: | ------------: | ------------: |
+|  32 |        0.055 |        0.063 |         0.054 |         0.050 |         1.01 |         0.41 |          1.08 |          0.39 |
+|  64 |        0.078 |        0.092 |         0.060 |         0.041 |         1.21 |         0.45 |          1.07 |          0.42 |
+| 128 |        0.062 |        0.064 |         0.089 |         0.073 |         1.18 |         0.45 |          1.38 |          0.57 |
+
+- 32 is the fastest or within noise in 7 of 8 cases: **`EIGEN_NB` = 32**. It also
+  halves the smallest matrix that ELPA accepts on a given grid (D7).
+
+Overlap phase [s] over the tile size, default grid spacing, LAPACK backend:
+
+| tile | 1024 orbitals (tiles) | 2000 orbitals (tiles) |
+| ---: | --------------------: | --------------------: |
+|   64 |            1.50 (136) |           17.87 (528) |
+|  128 |             2.15 (36) |            8.57 (136) |
+|  256 |             6.46 (10) |            14.35 (36) |
+|  512 |             23.56 (3) |            46.77 (10) |
+
+- The tiles are the unit of work, so with 512 at most 3 or 10 of 72 ranks work. Small
+  tiles balance better but are memory bound (64 at 2000 orbitals: 2 x 64 columns
+  streamed per tile over 5.8 M rows). 128 is the best at 2000 orbitals and 1.4x off
+  the best at 1024: **`OVERLAP_TILE` = 128**. A tile size chosen from norb and the
+  group size would get both; it is left as a follow-up.
 
 ## Risks / Trade-offs
 
@@ -331,8 +395,11 @@ The tolerances in `constants.h` stay as they are.
 
 ## Open Questions
 
-- The exact default values of `OVERLAP_TILE` and `EIGEN_NB`, and the constant in
-  the eigen grid heuristic. They are tuned by the spike in the tasks and don't affect
-  the specs.
+- ~~The exact default values of `OVERLAP_TILE` and `EIGEN_NB`, and the constant in
+  the eigen grid heuristic.~~ Resolved by D11a. The grid constant is named in the
+  distributed-eigensolver spec, which was updated from 512 to 160.
+- Whether the calibrated values hold across nodes, where larger eigen blocks and
+  fewer grid ranks may win. D11a was measured on one node.
+- Whether `OVERLAP_TILE` should adapt to the rank count (see D11a).
 - Whether `spread` or `packed` should become the default placement once
   measurements exist. Specs fix `packed` as the default for now.

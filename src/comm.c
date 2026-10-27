@@ -32,7 +32,13 @@ bool commIsMpi(void)
 
 void commInit(int *argc, char ***argv)
 {
+#ifdef EIGEN_ELPA
+  /* OpenMP builds of ELPA warn in elpa_setup below MPI_THREAD_SERIALIZED */
+  int provided;
+  MPI_Init_thread(argc, argv, MPI_THREAD_SERIALIZED, &provided);
+#else
   MPI_Init(argc, argv);
+#endif
 }
 
 void commFinalize(void)
